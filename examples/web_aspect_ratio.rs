@@ -7,22 +7,28 @@ mod wasm {
     use wasm_bindgen::prelude::*;
     use wasm_bindgen::JsCast;
     use web_sys::HtmlCanvasElement;
-    use winit::{
-        dpi::PhysicalSize,
-        event::{Event, WindowEvent},
-        event_loop::{ControlFlow, EventLoop},
-        window::{Window, WindowBuilder},
-    };
+    use winit::dpi::PhysicalSize;
+    use winit::event::{Event, WindowEvent};
+    use winit::event_loop::{ControlFlow, EventLoop};
+    use winit::window::{Window, WindowBuilder};
 
-    const EXPLANATION: &str = "
-This example draws a circle in the middle of a 4/1 aspect ratio canvas which acts as a useful demonstration of winit's resize handling on web.
-Even when the browser window is resized or aspect-ratio of the canvas changed the circle should always:
-* Fill the entire width or height of the canvas (whichever is smaller) without exceeding it.
+    const EXPLANATION: &str =
+        "
+This example draws a circle in the middle of a 4/1 aspect ratio canvas which acts as a useful \
+         demonstration of winit's resize handling on web.
+Even when the browser window is resized or \
+         aspect-ratio of the canvas changed the circle should always:
+* Fill the entire width or height \
+         of the canvas (whichever is smaller) without exceeding it.
 * Be perfectly round
-* Not be blurry or pixelated (there is no antialiasing so you may still see jagged edges depending on the DPI of your monitor)
+* Not be blurry \
+         or pixelated (there is no antialiasing so you may still see jagged edges depending on the \
+         DPI of your monitor)
 
-Currently winit does not handle resizes on web so the circle is rendered incorrectly.
-This example demonstrates the desired future functionality which will possibly be provided by https://github.com/rust-windowing/winit/pull/2074
+Currently winit does not handle resizes on web so the circle is rendered \
+         incorrectly.
+This example demonstrates the desired future functionality which will possibly \
+         be provided by https://github.com/rust-windowing/winit/pull/2074
 ";
 
     #[wasm_bindgen(start)]
@@ -33,7 +39,8 @@ This example demonstrates the desired future functionality which will possibly b
         let window = WindowBuilder::new()
             .with_title("A fantastic window!")
             // When running in a non-wasm environment this would set the window size to 100x100.
-            // However in this example it just sets a default initial size of 100x100 that is immediately overwritten due to the layout + styling of the page.
+            // However in this example it just sets a default initial size of 100x100 that is
+            // immediately overwritten due to the layout + styling of the page.
             .with_inner_size(PhysicalSize::new(100, 100))
             .build(&event_loop)
             .unwrap();
@@ -47,12 +54,11 @@ This example demonstrates the desired future functionality which will possibly b
             *control_flow = ControlFlow::Wait;
 
             match event {
-                Event::WindowEvent {
-                    event: WindowEvent::Resized(resize),
-                    window_id,
-                } if window_id == window.id() => {
+                Event::WindowEvent { event: WindowEvent::Resized(resize), window_id }
+                    if window_id == window.id() =>
+                {
                     render_circle(&canvas, resize);
-                }
+                },
                 _ => (),
             }
         });
@@ -65,11 +71,13 @@ This example demonstrates the desired future functionality which will possibly b
         let document = web_window.document().unwrap();
         let body = document.body().unwrap();
 
-        // Set a background color for the canvas to make it easier to tell the where the canvas is for debugging purposes.
+        // Set a background color for the canvas to make it easier to tell the where the canvas is
+        // for debugging purposes.
         let canvas = window.canvas();
-        canvas
-            .style()
-            .set_css_text("display: block; background-color: crimson; margin: auto; width: 50%; aspect-ratio: 4 / 1;");
+        canvas.style().set_css_text(
+            "display: block; background-color: crimson; margin: auto; width: 50%; aspect-ratio: 4 \
+             / 1;",
+        );
         body.append_child(&canvas).unwrap();
 
         let explanation = document.create_element("pre").unwrap();

@@ -2,8 +2,9 @@
 
 use simple_logger::SimpleLogger;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
+use winit::event_loop::EventLoop;
 use winit::monitor::MonitorHandle;
-use winit::{event_loop::EventLoop, window::WindowBuilder};
+use winit::window::WindowBuilder;
 
 fn main() {
     SimpleLogger::new().init().unwrap();
@@ -49,10 +50,6 @@ fn print_info(intro: &str, monitor: MonitorHandle) {
         let PhysicalSize { width, height } = mode.size();
         let bits = mode.bit_depth();
         let m_hz = mode.refresh_rate_millihertz();
-        println!(
-            "    {width}x{height}x{bits} @ {}.{} Hz",
-            m_hz / 1000,
-            m_hz % 1000
-        );
+        println!("    {width}x{height}x{bits} @ {}.{} Hz", m_hz / 1000, m_hz % 1000);
     }
 }

@@ -1,138 +1,114 @@
-use glib::IsA;
+use std::rc::Rc;
+use std::sync::atomic::AtomicBool;
 
-use crate::{
-    event_loop::EventLoopWindowTarget,
-    platform_impl::ApplicationName,
-    window::{Window, WindowBuilder},
-};
+use cursor_icon::CursorIcon;
+use dpi::Size;
 
-pub use crate::platform_impl::hit_test;
+use crate::event_loop::EventLoop;
+use crate::icon::Icon;
+use crate::monitor::MonitorHandle;
+use crate::platform_impl::wayland::ActiveEventLoop;
+use crate::platform_impl::{self, Fullscreen};
+use crate::utils::AsAny;
+use crate::window::{UserAttentionType, WindowAttributes, WindowId};
 
-/// Additional methods on `Window` that are specific to Unix.
 pub trait WindowExtUnix {
-    /// Returns the `gtk::ApplicatonWindow` from gtk crate that is used by this window.
     fn gtk_window(&self) -> &gtk::ApplicationWindow;
 
-    /// Returns the vertical `gtk::Box` that is added by default as the sole child of this window.
-    /// Returns `None` if the default vertical `gtk::Box` creation was disabled by [`WindowBuilderExtUnix::with_default_vbox`].
-    fn default_vbox(&self) -> Option<&gtk::Box>;
+    fn default_box(&self) -> Option<&gtk::Box>;
 
-    /// Whether to show the window icon in the taskbar or not.
     fn set_skip_taskbar(&self, skip: bool);
+}
+
+pub trait MonitorExtUnix {
+    fn native(&self) -> u32;
+}
+
+impl MonitorExtUnix for MonitorHandle {
+    #[inline]
+    fn native(&self) -> u32 {
+        self.inner.native_identifier()
+    }
+}
+
+pub trait WindowAttributesExtUnix {
+    fn with_name(self, general: impl Into<String>, instance: impl Into<String>) -> Self;
+}
+
+pub trait EventLoopExtUnix {
+    fn is_unix(&self) -> bool;
+}
+
+impl EventLoopExtUnix for EventLoop {
+    fn is_unix(&self) -> bool {
+        self.event_loop.is_unix()
+    }
+}
+
+pub trait ActiveEventLoopExtUnix {
+    fn is_unix(&self) -> bool;
+}
+
+impl ActiveEventLoopExtUnix for ActiveEventLoop {
+    #[inline]
+    fn is_unix(&self) -> bool {
+        self.as_any().downcast_ref::<platform_impl::unix::ActiveEventLoop>().is_some()
+    }
+}
+
+impl WindowAttributesExtUnix for WindowAttributes {
+    #[inline]
+    fn with_name(mut self, general: impl Into<String>, instance: impl Into<String>) -> Self {
+        self.platform_specific.name =
+            Some(crate::platform_impl::ApplicationName::new(general.into(), instance.into()));
+        self
+    }
 }
 
 impl WindowExtUnix for Window {
     fn gtk_window(&self) -> &gtk::ApplicationWindow {
-        &self.window.window
+        &self.window
     }
 
-    fn default_vbox(&self) -> Option<&gtk::Box> {
-        self.window.default_vbox.as_ref()
+    fn default_box(&self) -> Option<&gtk::Box> {
+        self.default_box()
     }
 
     fn set_skip_taskbar(&self, skip: bool) {
-        self.window.set_skip_taskbar(skip);
+        self.set_skip_taskbar(skip);
     }
 }
 
-pub trait WindowBuilderExtUnix {
-    /// Build window with the given `general` and `instance` names.
-    ///
-    /// The `general` sets general class of `WM_CLASS(STRING)`, while `instance` set the
-    /// instance part of it. The resulted property looks like `WM_CLASS(STRING) = "general", "instance"`.
-    ///
-    /// For details about application ID conventions, see the
-    /// [Desktop Entry Spec](https://specifications.freedesktop.org/desktop-entry-spec/desktop-entry-spec-latest.html#desktop-file-id)
-    fn with_name(self, general: impl Into<String>, instance: impl Into<String>) -> Self;
+pub struct Window {
+    pub(crate) window_id: WindowId,
+    pub(crate) window: gtk::ApplicationWindow,
 
-    /// Whether to create the window icon with the taskbar icon or not.
-    fn with_skip_taskbar(self, skip: bool) -> WindowBuilder;
-
-    /// Set this window as a transient dialog for `parent`
-    /// <https://gtk-rs.org/gtk3-rs/stable/latest/docs/gdk/struct.Window.html#method.set_transient_for>
-    fn with_transient_for(self, parent: &impl IsA<gtk::Window>) -> WindowBuilder;
-
-    /// Whether to enable or disable the internal draw for transparent window.
-    ///
-    /// When tranparent attribute is enabled, we will call `connect_draw` and draw a transparent background.
-    /// For anyone who wants to draw the background themselves, set this to `false`.
-    /// Default is `true`.
-    fn with_transparent_draw(self, draw: bool) -> WindowBuilder;
-
-    /// Whether to enable or disable the double buffered rendering of the window.
-    ///
-    /// Default is `true`.
-    fn with_double_buffered(self, double_buffered: bool) -> WindowBuilder;
-
-    /// Whether to enable the rgba visual for the window.
-    ///
-    /// Default is `false` but is always `true` if [`WindowAttributes::transparent`](crate::window::WindowAttributes::transparent) is `true`
-    fn with_rgba_visual(self, rgba_visual: bool) -> WindowBuilder;
-
-    /// Wether to set this window as app paintable
-    ///
-    /// <https://docs.gtk.org/gtk3/method.Widget.set_app_paintable.html>
-    ///
-    /// Default is `false` but is always `true` if [`WindowAttributes::transparent`](crate::window::WindowAttributes::transparent) is `true`
-    fn with_app_paintable(self, app_paintable: bool) -> WindowBuilder;
-
-    /// Whether to create a vertical `gtk::Box` and add it as the sole child of this window.
-    /// Created by default.
-    fn with_default_vbox(self, add: bool) -> WindowBuilder;
+    pub(crate) window_request_tx: glib::MainContext,
 }
 
-impl WindowBuilderExtUnix for WindowBuilder {
-    fn with_name(mut self, general: impl Into<String>, instance: impl Into<String>) -> Self {
-        // TODO We haven't implemented it yet.
-        self.platform_specific.name = Some(ApplicationName::new(general.into(), instance.into()));
-        self
-    }
-
-    fn with_transient_for(mut self, parent: &impl IsA<gtk::Window>) -> WindowBuilder {
-        self.platform_specific.parent = Some(parent.clone().into());
-        self
-    }
-
-    fn with_skip_taskbar(mut self, skip: bool) -> WindowBuilder {
-        self.platform_specific.skip_taskbar = skip;
-        self
-    }
-
-    fn with_transparent_draw(mut self, draw: bool) -> WindowBuilder {
-        self.platform_specific.auto_transparent = draw;
-        self
-    }
-
-    fn with_double_buffered(mut self, double_buffered: bool) -> WindowBuilder {
-        self.platform_specific.double_buffered = double_buffered;
-        self
-    }
-
-    fn with_rgba_visual(mut self, rgba_visual: bool) -> WindowBuilder {
-        self.platform_specific.rgba_visual = rgba_visual;
-        self
-    }
-
-    fn with_app_paintable(mut self, app_paintable: bool) -> WindowBuilder {
-        self.platform_specific.app_paintable = app_paintable;
-        self
-    }
-
-    fn with_default_vbox(mut self, add: bool) -> WindowBuilder {
-        self.platform_specific.default_vbox = add;
-        self
-    }
-}
-
-/// Additional methods on `EventLoopWindowTarget` that are specific to Unix.
-pub trait EventLoopWindowTargetExtUnix {
-    /// True if the `EventLoopWindowTarget` uses Wayland.
-    fn is_wayland(&self) -> bool;
-}
-
-impl<T> EventLoopWindowTargetExtUnix for EventLoopWindowTarget<T> {
-    #[inline]
-    fn is_wayland(&self) -> bool {
-        self.p.is_wayland()
-    }
+pub(crate) enum WindowRequest {
+    Title(String),
+    Position((i32, i32)),
+    Size((i32, i32)),
+    SizeConstraints(Option<Size>, Option<Size>),
+    Visible(bool),
+    Focus,
+    Resizable(bool),
+    // Closable(bool),
+    Minimized(bool),
+    Maximized(bool),
+    DragWindow,
+    Fullscreen(Option<Fullscreen>),
+    Decorations(bool),
+    AlwaysOnBottom(bool),
+    AlwaysOnTop(bool),
+    WindowIcon(Option<Icon>),
+    UserAttention(Option<UserAttentionType>),
+    SetSkipTaskbar(bool),
+    CursorIcon(Option<CursorIcon>),
+    CursorPosition((i32, i32)),
+    CursorIgnoreEvents(bool),
+    WireUpEvents { transparent: Rc<AtomicBool> },
+    // SetVisibleOnAllWorkspaces(bool),
+    // ProgressBarState(ProgressBarState),
 }

@@ -1,13 +1,11 @@
 //! Demonstrates capability to create in-app draggable regions for client-side decoration support.
 
 use simple_logger::SimpleLogger;
-use winit::{
-    event::{
-        ElementState, Event, KeyboardInput, MouseButton, StartCause, VirtualKeyCode, WindowEvent,
-    },
-    event_loop::{ControlFlow, EventLoop},
-    window::{CursorIcon, ResizeDirection, WindowBuilder},
+use winit::event::{
+    ElementState, Event, KeyboardInput, MouseButton, StartCause, VirtualKeyCode, WindowEvent,
 };
+use winit::event_loop::{ControlFlow, EventLoop};
+use winit::window::{CursorIcon, ResizeDirection, WindowBuilder};
 
 const BORDER: f64 = 8.0;
 
@@ -28,7 +26,7 @@ fn main() {
     event_loop.run(move |event, _, control_flow| match event {
         Event::NewEvents(StartCause::Init) => {
             eprintln!("Press 'B' to toggle borderless")
-        }
+        },
         Event::WindowEvent { event, .. } => match event {
             WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
             WindowEvent::CursorMoved { position, .. } => {
@@ -41,7 +39,7 @@ fn main() {
                         window.set_cursor_icon(cursor_direction_icon(cursor_location))
                     }
                 }
-            }
+            },
 
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -51,7 +49,7 @@ fn main() {
                 if let Some(dir) = cursor_location {
                     let _res = window.drag_resize_window(dir);
                 }
-            }
+            },
             WindowEvent::KeyboardInput {
                 input:
                     KeyboardInput {
@@ -63,7 +61,7 @@ fn main() {
             } => {
                 border = !border;
                 window.set_decorations(border);
-            }
+            },
             _ => (),
         },
         _ => (),

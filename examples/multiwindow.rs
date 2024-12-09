@@ -3,11 +3,9 @@
 use std::collections::HashMap;
 
 use simple_logger::SimpleLogger;
-use winit::{
-    event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent},
-    event_loop::EventLoop,
-    window::Window,
-};
+use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
+use winit::event_loop::EventLoop;
+use winit::window::Window;
 
 fn main() {
     SimpleLogger::new().init().unwrap();
@@ -37,7 +35,7 @@ fn main() {
                         if windows.is_empty() {
                             control_flow.set_exit();
                         }
-                    }
+                    },
                     WindowEvent::KeyboardInput {
                         input:
                             KeyboardInput {
@@ -51,10 +49,10 @@ fn main() {
                         let window = Window::new(event_loop).unwrap();
                         println!("Opened a new window: {:?}", window.id());
                         windows.insert(window.id(), window);
-                    }
+                    },
                     _ => (),
                 }
-            }
+            },
             _ => (),
         }
     })

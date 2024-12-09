@@ -2,7 +2,6 @@
 
 #[cfg(target_os = "macos")]
 use winit::platform::macos::{OptionAsAlt, WindowExtMacOS};
-
 #[cfg(target_os = "macos")]
 use winit::{
     event::ElementState,
@@ -29,10 +28,11 @@ fn main() {
         control_flow.set_wait();
 
         match event {
-            Event::WindowEvent {
-                event: WindowEvent::CloseRequested,
-                window_id,
-            } if window_id == window.id() => control_flow.set_exit(),
+            Event::WindowEvent { event: WindowEvent::CloseRequested, window_id }
+                if window_id == window.id() =>
+            {
+                control_flow.set_exit()
+            },
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::MouseInput {
                     state: ElementState::Pressed,
@@ -48,14 +48,14 @@ fn main() {
 
                     println!("Received Mouse click, toggling option_as_alt to: {option_as_alt:?}");
                     window.set_option_as_alt(option_as_alt);
-                }
+                },
                 WindowEvent::ReceivedCharacter(c) => println!("ReceivedCharacter: {c:?}"),
                 WindowEvent::KeyboardInput { .. } => println!("KeyboardInput: {event:?}"),
                 _ => (),
             },
             Event::MainEventsCleared => {
                 window.request_redraw();
-            }
+            },
             _ => (),
         }
     });

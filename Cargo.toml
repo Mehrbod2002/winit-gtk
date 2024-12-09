@@ -1,71 +1,220 @@
 [package]
-name = "winit-gtk"
-version = "0.29.1"
+authors = ["The winit contributors", "Pierre Krieger <pierre.krieger1708@gmail.com>"]
+categories = ["gui"]
 description = "Cross-platform window creation library."
-edition = "2021"
+documentation = "https://docs.rs/winit"
+edition.workspace = true
+include = [
+    "/build.rs",
+    "/docs",
+    "/examples",
+    "/FEATURES.md",
+    "/LICENSE",
+    "/src",
+    "!/src/platform_impl/web/script",
+    "/src/platform_impl/web/script/**/*.min.js",
+    "/tests",
+]
 keywords = ["windowing"]
-license = "Apache-2.0"
-readme = "README.md"
-repository = "https://github.com/wusyong/winit-gtk"
-documentation = "https://docs.rs/winit-gtk"
-
-[lib]
+license.workspace = true
 name = "winit"
+readme = "README.md"
+repository.workspace = true
+rust-version.workspace = true
+version = "0.30.5"
 
 [package.metadata.docs.rs]
-features = [ "serde" ]
-default-target = "x86_64-unknown-linux-gnu"
+features = [
+    "serde",
+    "mint",
+    # Enabled to get docs to compile
+    "android-native-activity",
+]
 # These are all tested in CI
+rustdoc-args = ["--cfg", "docsrs"]
 targets = [
+    # Windows
+    "i686-pc-windows-msvc",
+    "x86_64-pc-windows-msvc",
+    # macOS
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
     # Unix (X11 & Wayland)
     "i686-unknown-linux-gnu",
     "x86_64-unknown-linux-gnu",
+    # iOS
+    "aarch64-apple-ios",
+    # Android
+    "aarch64-linux-android",
+    # Web
+    "wasm32-unknown-unknown",
 ]
-rustdoc-args = ["--cfg", "docsrs"]
 
+# Features are documented in either `lib.rs` or under `winit::platform`.
 [features]
+android-game-activity = ["android-activity/game-activity"]
+android-native-activity = ["android-activity/native-activity"]
 default = ["x11", "wayland", "wayland-dlopen", "wayland-csd-adwaita"]
-x11 = []
-wayland = []
-wayland-dlopen = []
-wayland-csd-adwaita = []
-wayland-csd-adwaita-crossfont = []
-wayland-csd-adwaita-notitle = []
-android-native-activity = [ "android-activity/native-activity" ]
-android-game-activity = [ "android-activity/game-activity" ]
+mint = ["dpi/mint"]
+serde = ["dep:serde", "cursor-icon/serde", "smol_str/serde", "dpi/serde", "bitflags/serde"]
+wayland = [
+    "wayland-client",
+    "wayland-backend",
+    "wayland-protocols",
+    "wayland-protocols-plasma",
+    "sctk",
+    "ahash",
+    "memmap2",
+]
+wayland-csd-adwaita = ["sctk-adwaita", "sctk-adwaita/ab_glyph"]
+wayland-csd-adwaita-crossfont = ["sctk-adwaita", "sctk-adwaita/crossfont"]
+wayland-csd-adwaita-notitle = ["sctk-adwaita"]
+wayland-dlopen = ["wayland-backend/dlopen"]
+x11 = ["x11-dl", "bytemuck", "percent-encoding", "xkbcommon-dl/x11", "x11rb"]
 
 [build-dependencies]
-cfg_aliases = "0.1.1"
+cfg_aliases = "0.2.1"
 
 [dependencies]
-bitflags = "1"
-instant = { version = "0.1", features = ["wasm-bindgen"] }
-log = "0.4"
-mint = { version = "0.5.6", optional = true }
-once_cell = "1.12"
-raw_window_handle = { package = "raw-window-handle", version = "0.5" }
-serde = { version = "1", optional = true, features = ["serde_derive"] }
+bitflags = "2"
+crossbeam-channel = "0.5.13"
+cursor-icon = "1.1.0"
+dpi = { version = "0.1.1", path = "dpi" }
+gio = "0.18"
+glib = "0.18"
+gtk = "0.18"
+gdk = "0.18"
+gdk-sys = "0.18"
+gdkx11-sys = "0.18"
+gdkwayland-sys = "0.18.0"
+gdk-pixbuf = "0.18"
+rwh_06 = { package = "raw-window-handle", version = "0.6", features = ["std"] }
+serde = { workspace = true, optional = true }
+smol_str = "0.3"
+tracing = { version = "0.1.40", default-features = false }
+log = "0.4.22"
+instant = "0.1.13"
 
 [dev-dependencies]
-image = { version = "0.24.0", default-features = false, features = ["png"] }
-simple_logger = { version = "2.1.0", default_features = false }
+image = { version = "0.25.0", default-features = false, features = ["png"] }
+tracing = { version = "0.1.40", default-features = false, features = ["log"] }
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 
+[target.'cfg(not(target_os = "android"))'.dev-dependencies]
+softbuffer = { version = "0.4.6", default-features = false, features = [
+    "x11",
+    "x11-dlopen",
+    "wayland",
+    "wayland-dlopen",
+] }
+
+# Android
 [target.'cfg(target_os = "android")'.dependencies]
-# Coordinate the next winit release with android-ndk-rs: https://github.com/rust-windowing/winit/issues/1995
-android-activity = "0.4.0"
-ndk = "0.7.0"
+android-activity = "0.6.0"
+ndk = { version = "0.9.0", features = ["rwh_06"], default-features = false }
 
-[target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
+# AppKit or UIKit
+[target.'cfg(target_vendor = "apple")'.dependencies]
+block2 = "0.5.1"
 core-foundation = "0.9.3"
-objc2 = ">=0.3.0-beta.3, <0.3.0-beta.4" # Allow `0.3.0-beta.3.patch-leaks`
+objc2 = "0.5.2"
 
+# AppKit
 [target.'cfg(target_os = "macos")'.dependencies]
-core-graphics = "0.22.3"
-dispatch = "0.2.0"
+core-graphics = "0.23.1"
+objc2-app-kit = { version = "0.2.2", features = [
+    "NSAppearance",
+    "NSApplication",
+    "NSBitmapImageRep",
+    "NSButton",
+    "NSColor",
+    "NSControl",
+    "NSCursor",
+    "NSDragging",
+    "NSEvent",
+    "NSGraphics",
+    "NSGraphicsContext",
+    "NSImage",
+    "NSImageRep",
+    "NSMenu",
+    "NSMenuItem",
+    "NSOpenGLView",
+    "NSPasteboard",
+    "NSResponder",
+    "NSRunningApplication",
+    "NSScreen",
+    "NSTextInputClient",
+    "NSTextInputContext",
+    "NSToolbar",
+    "NSView",
+    "NSWindow",
+    "NSWindowScripting",
+    "NSWindowTabGroup",
+] }
+objc2-foundation = { version = "0.2.2", features = [
+    "block2",
+    "dispatch",
+    "NSArray",
+    "NSAttributedString",
+    "NSData",
+    "NSDictionary",
+    "NSDistributedNotificationCenter",
+    "NSEnumerator",
+    "NSGeometry",
+    "NSKeyValueObserving",
+    "NSNotification",
+    "NSObjCRuntime",
+    "NSOperation",
+    "NSPathUtilities",
+    "NSProcessInfo",
+    "NSRunLoop",
+    "NSString",
+    "NSThread",
+    "NSValue",
+] }
 
-[target.'cfg(target_os = "windows")'.dependencies.windows-sys]
-version = "0.45"
-features = [
+# UIKit
+[target.'cfg(all(target_vendor = "apple", not(target_os = "macos")))'.dependencies]
+objc2-foundation = { version = "0.2.2", features = [
+    "block2",
+    "dispatch",
+    "NSArray",
+    "NSEnumerator",
+    "NSGeometry",
+    "NSObjCRuntime",
+    "NSOperation",
+    "NSString",
+    "NSProcessInfo",
+    "NSThread",
+    "NSSet",
+] }
+objc2-ui-kit = { version = "0.2.2", features = [
+    "UIApplication",
+    "UIDevice",
+    "UIEvent",
+    "UIGeometry",
+    "UIGestureRecognizer",
+    "UITextInput",
+    "UITextInputTraits",
+    "UIOrientation",
+    "UIPanGestureRecognizer",
+    "UIPinchGestureRecognizer",
+    "UIResponder",
+    "UIRotationGestureRecognizer",
+    "UIScreen",
+    "UIScreenMode",
+    "UITapGestureRecognizer",
+    "UITouch",
+    "UITraitCollection",
+    "UIView",
+    "UIViewController",
+    "UIWindow",
+] }
+
+# Windows
+[target.'cfg(target_os = "windows")'.dependencies]
+unicode-segmentation = "1.7.1"
+windows-sys = { version = "0.52.0", features = [
     "Win32_Devices_HumanInterfaceDevice",
     "Win32_Foundation",
     "Win32_Globalization",
@@ -76,6 +225,7 @@ features = [
     "Win32_System_Com",
     "Win32_System_LibraryLoader",
     "Win32_System_Ole",
+    "Win32_Security",
     "Win32_System_SystemInformation",
     "Win32_System_SystemServices",
     "Win32_System_Threading",
@@ -90,59 +240,136 @@ features = [
     "Win32_UI_Shell",
     "Win32_UI_TextServices",
     "Win32_UI_WindowsAndMessaging",
-]
+] }
 
-[target.'cfg(all(unix, not(any(target_os = "redox", target_arch = "wasm32", target_os = "android", target_os = "ios", target_os = "macos"))))'.dependencies]
-x11-dl = { version = "2.18.5" }
-cairo-rs = "0.18"
-gio = "0.18"
-glib = "0.18"
-gtk = "0.18"
-gdk = "0.18"
-gdk-sys = "0.18"
-gdkx11-sys = "0.18"
-gdkwayland-sys = "0.18.0"
-gdk-pixbuf = "0.18"
-crossbeam-channel = "0.5"
+# Linux
+[target.'cfg(all(unix, not(any(target_os = "redox", target_family = "wasm", target_os = "android", target_vendor = "apple"))))'.dependencies]
+ahash = { version = "0.8.7", features = ["no-rng"], optional = true }
+bytemuck = { version = "1.13.1", default-features = false, optional = true }
+calloop = "0.13.0"
+libc = "0.2.64"
+memmap2 = { version = "0.9.0", optional = true }
+percent-encoding = { version = "2.0", optional = true }
+rustix = { version = "0.38.4", default-features = false, features = [
+    "std",
+    "system",
+    "thread",
+    "process",
+] }
+sctk = { package = "smithay-client-toolkit", version = "0.19.2", default-features = false, features = [
+    "calloop",
+], optional = true }
+sctk-adwaita = { version = "0.10.1", default-features = false, optional = true }
+wayland-backend = { version = "0.3.5", default-features = false, features = [
+    "client_system",
+], optional = true }
+wayland-client = { version = "0.31.4", optional = true }
+wayland-protocols = { version = "0.32.2", features = ["staging"], optional = true }
+wayland-protocols-plasma = { version = "0.3.2", features = ["client"], optional = true }
+x11-dl = { version = "2.19.1", optional = true }
+x11rb = { version = "0.13.0", default-features = false, features = [
+    "allow-unsafe-code",
+    "cursor",
+    "dl-libxcb",
+    "randr",
+    "resource_manager",
+    "sync",
+    "xinput",
+    "xkb",
+], optional = true }
+xkbcommon-dl = "0.4.2"
 
+# Orbital
 [target.'cfg(target_os = "redox")'.dependencies]
-orbclient = { version = "0.3.42", default-features = false }
-redox_syscall = "0.3"
+orbclient = { version = "0.3.47", default-features = false }
+redox_syscall = "0.5.7"
 
-[target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))'.build-dependencies]
-wayland-scanner = "0.29.5"
+# Web
+[target.'cfg(target_family = "wasm")'.dependencies]
+js-sys = "0.3.70"
+pin-project = "1"
+wasm-bindgen = "0.2.93"
+wasm-bindgen-futures = "0.4.43"
+web-time = "1"
+web_sys = { package = "web-sys", version = "0.3.70", features = [
+    "AbortController",
+    "AbortSignal",
+    "Blob",
+    "BlobPropertyBag",
+    "console",
+    "CssStyleDeclaration",
+    "Document",
+    "DomException",
+    "DomRect",
+    "DomRectReadOnly",
+    "Element",
+    "Event",
+    "EventTarget",
+    "FocusEvent",
+    "HtmlCanvasElement",
+    "HtmlElement",
+    "HtmlHtmlElement",
+    "HtmlImageElement",
+    "ImageBitmap",
+    "ImageBitmapOptions",
+    "ImageBitmapRenderingContext",
+    "ImageData",
+    "IntersectionObserver",
+    "IntersectionObserverEntry",
+    "KeyboardEvent",
+    "MediaQueryList",
+    "MessageChannel",
+    "MessagePort",
+    "Navigator",
+    "Node",
+    "OrientationLockType",
+    "OrientationType",
+    "PageTransitionEvent",
+    "Permissions",
+    "PermissionState",
+    "PermissionStatus",
+    "PointerEvent",
+    "PremultiplyAlpha",
+    "ResizeObserver",
+    "ResizeObserverBoxOptions",
+    "ResizeObserverEntry",
+    "ResizeObserverOptions",
+    "ResizeObserverSize",
+    "Screen",
+    "ScreenOrientation",
+    "Url",
+    "VisibilityState",
+    "WheelEvent",
+    "Window",
+    "Worker",
+] }
 
-[target.'cfg(target_arch = "wasm32")'.dependencies.web_sys]
-package = "web-sys"
-version = "0.3.22"
-features = [
-    'console',
-    "AddEventListenerOptions",
-    'CssStyleDeclaration',
-    'BeforeUnloadEvent',
-    'Document',
-    'DomRect',
-    'Element',
-    'Event',
-    "EventListenerOptions",
-    'EventTarget',
-    'FocusEvent',
-    'HtmlCanvasElement',
-    'HtmlElement',
-    'KeyboardEvent',
-    'MediaQueryList',
-    'MediaQueryListEvent',
-    'MouseEvent',
-    'Node',
-    'PointerEvent',
-    'Window',
-    'WheelEvent'
-]
+[target.'cfg(all(target_family = "wasm", target_feature = "atomics"))'.dependencies]
+atomic-waker = "1"
+concurrent-queue = { version = "2", default-features = false }
 
-[target.'cfg(target_arch = "wasm32")'.dependencies.wasm-bindgen]
-version = "0.2.45"
+[target.'cfg(target_family = "wasm")'.dev-dependencies]
+console_error_panic_hook = "0.1"
+tracing-web = "0.1"
+wasm-bindgen-test = "0.3"
 
-[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-console_log = "0.2"
-web-sys = { version = "0.3.22", features = ['CanvasRenderingContext2d'] }
+[[example]]
+doc-scrape-examples = true
+name = "window"
 
+[[example]]
+name = "child_window"
+
+[workspace]
+members = ["dpi"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/rust-windowing/winit"
+rust-version = "1.73"
+
+[workspace.dependencies]
+mint = "0.5.6"
+serde = { version = "1", features = ["serde_derive"] }

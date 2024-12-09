@@ -3,12 +3,10 @@
 // This example is used by developers to test various window functions.
 
 use simple_logger::SimpleLogger;
-use winit::{
-    dpi::LogicalSize,
-    event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent},
-    event_loop::{DeviceEventFilter, EventLoop},
-    window::{WindowBuilder, WindowButtons},
-};
+use winit::dpi::LogicalSize;
+use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
+use winit::event_loop::{DeviceEventFilter, EventLoop};
+use winit::window::{WindowBuilder, WindowButtons};
 
 fn main() {
     SimpleLogger::new().init().unwrap();
@@ -47,21 +45,22 @@ fn main() {
                 VirtualKeyCode::F => {
                     let buttons = window.enabled_buttons();
                     window.set_enabled_buttons(buttons ^ WindowButtons::CLOSE);
-                }
+                },
                 VirtualKeyCode::G => {
                     let buttons = window.enabled_buttons();
                     window.set_enabled_buttons(buttons ^ WindowButtons::MAXIMIZE);
-                }
+                },
                 VirtualKeyCode::H => {
                     let buttons = window.enabled_buttons();
                     window.set_enabled_buttons(buttons ^ WindowButtons::MINIMIZE);
-                }
+                },
                 _ => (),
             },
-            Event::WindowEvent {
-                event: WindowEvent::CloseRequested,
-                window_id,
-            } if window_id == window.id() => control_flow.set_exit(),
+            Event::WindowEvent { event: WindowEvent::CloseRequested, window_id }
+                if window_id == window.id() =>
+            {
+                control_flow.set_exit()
+            },
             _ => (),
         }
     });

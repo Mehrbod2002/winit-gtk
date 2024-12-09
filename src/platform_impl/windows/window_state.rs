@@ -1,28 +1,26 @@
-use crate::{
-    dpi::{PhysicalPosition, PhysicalSize, Size},
-    event::ModifiersState,
-    icon::Icon,
-    platform_impl::platform::{event_loop, util, Fullscreen},
-    window::{CursorIcon, Theme, WindowAttributes},
-};
 use std::io;
 use std::sync::MutexGuard;
-use windows_sys::Win32::{
-    Foundation::{HWND, RECT},
-    Graphics::Gdi::InvalidateRgn,
-    UI::WindowsAndMessaging::{
-        AdjustWindowRectEx, EnableMenuItem, GetMenu, GetSystemMenu, GetWindowLongW, SendMessageW,
-        SetWindowLongW, SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE, HWND_BOTTOM,
-        HWND_NOTOPMOST, HWND_TOPMOST, MF_BYCOMMAND, MF_DISABLED, MF_ENABLED, SC_CLOSE,
-        SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOREPOSITION,
-        SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOW,
-        SW_SHOWNOACTIVATE, WINDOWPLACEMENT, WINDOW_EX_STYLE, WINDOW_STYLE, WS_BORDER, WS_CAPTION,
-        WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_ACCEPTFILES, WS_EX_APPWINDOW,
-        WS_EX_LAYERED, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
-        WS_EX_WINDOWEDGE, WS_MAXIMIZE, WS_MAXIMIZEBOX, WS_MINIMIZE, WS_MINIMIZEBOX,
-        WS_OVERLAPPEDWINDOW, WS_POPUP, WS_SIZEBOX, WS_SYSMENU, WS_VISIBLE,
-    },
+
+use bitflags::bitflags;
+use windows_sys::Win32::Foundation::{HWND, RECT};
+use windows_sys::Win32::Graphics::Gdi::InvalidateRgn;
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    AdjustWindowRectEx, EnableMenuItem, GetMenu, GetSystemMenu, GetWindowLongW, SendMessageW,
+    SetWindowLongW, SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE, HWND_BOTTOM, HWND_NOTOPMOST,
+    HWND_TOPMOST, MF_BYCOMMAND, MF_DISABLED, MF_ENABLED, SC_CLOSE, SWP_ASYNCWINDOWPOS,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOREPOSITION, SWP_NOSIZE, SWP_NOZORDER,
+    SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOW, SW_SHOWNOACTIVATE, WINDOWPLACEMENT,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WS_BORDER, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN,
+    WS_CLIPSIBLINGS, WS_EX_ACCEPTFILES, WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_NOREDIRECTIONBITMAP,
+    WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_EX_WINDOWEDGE, WS_MAXIMIZE, WS_MAXIMIZEBOX, WS_MINIMIZE,
+    WS_MINIMIZEBOX, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_SIZEBOX, WS_SYSMENU, WS_VISIBLE,
 };
+
+use crate::dpi::{PhysicalPosition, PhysicalSize, Size};
+use crate::icon::Icon;
+use crate::keyboard::ModifiersState;
+use crate::platform_impl::platform::{event_loop, util, Fullscreen, SelectedCursor};
+use crate::window::{Theme, WindowAttributes};
 
 /// Contains information about states and the window that the callback is going to use.
 pub(crate) struct WindowState {
@@ -31,6 +29,8 @@ pub(crate) struct WindowState {
     /// Used by `WM_GETMINMAXINFO`.
     pub min_size: Option<Size>,
     pub max_size: Option<Size>,
+
+    pub surface_resize_increments: Option<Size>,
 
     pub window_icon: Option<Icon>,
     pub taskbar_icon: Option<Icon>,
@@ -42,7 +42,7 @@ pub(crate) struct WindowState {
     pub fullscreen: Option<Fullscreen>,
     pub current_theme: Theme,
     pub preferred_theme: Option<Theme>,
-    pub high_surrogate: Option<u16>,
+
     pub window_flags: WindowFlags,
 
     pub ime_state: ImeState,
@@ -51,6 +51,9 @@ pub(crate) struct WindowState {
     // Used by WM_NCACTIVATE, WM_SETFOCUS and WM_KILLFOCUS
     pub is_active: bool,
     pub is_focused: bool,
+
+    // Flag whether redraw was requested.
+    pub redraw_requested: bool,
 
     pub dragging: bool,
 
@@ -64,13 +67,14 @@ pub struct SavedWindow {
 
 #[derive(Clone)]
 pub struct MouseProperties {
-    pub cursor: CursorIcon,
+    pub(crate) selected_cursor: SelectedCursor,
     pub capture_count: u32,
     cursor_flags: CursorFlags,
     pub last_position: Option<PhysicalPosition<f64>>,
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct CursorFlags: u8 {
         const GRABBED   = 1 << 0;
         const HIDDEN    = 1 << 1;
@@ -78,6 +82,7 @@ bitflags! {
     }
 }
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct WindowFlags: u32 {
         const RESIZABLE         = 1 << 0;
         const MINIMIZABLE       = 1 << 1;
@@ -118,7 +123,9 @@ bitflags! {
 
         const MARKER_ACTIVATE = 1 << 21;
 
-        const EXCLUSIVE_FULLSCREEN_OR_MASK = WindowFlags::ALWAYS_ON_TOP.bits;
+        const CLIP_CHILDREN = 1 << 22;
+
+        const EXCLUSIVE_FULLSCREEN_OR_MASK = WindowFlags::ALWAYS_ON_TOP.bits();
     }
 }
 
@@ -138,14 +145,16 @@ impl WindowState {
     ) -> WindowState {
         WindowState {
             mouse: MouseProperties {
-                cursor: CursorIcon::default(),
+                selected_cursor: SelectedCursor::default(),
                 capture_count: 0,
                 cursor_flags: CursorFlags::empty(),
                 last_position: None,
             },
 
-            min_size: attributes.min_inner_size,
-            max_size: attributes.max_inner_size,
+            min_size: attributes.min_surface_size,
+            max_size: attributes.max_surface_size,
+
+            surface_resize_increments: attributes.surface_resize_increments,
 
             window_icon: attributes.window_icon.clone(),
             taskbar_icon: None,
@@ -157,7 +166,6 @@ impl WindowState {
             fullscreen: None,
             current_theme,
             preferred_theme,
-            high_surrogate: None,
             window_flags: WindowFlags::empty(),
 
             ime_state: ImeState::Disabled,
@@ -165,6 +173,7 @@ impl WindowState {
 
             is_active: false,
             is_focused: false,
+            redraw_requested: false,
 
             dragging: false,
 
@@ -230,7 +239,7 @@ impl MouseProperties {
             Err(e) => {
                 self.cursor_flags = old_flags;
                 return Err(e);
-            }
+            },
         }
 
         Ok(())
@@ -247,7 +256,7 @@ impl WindowFlags {
 
     pub fn to_window_styles(self) -> (WINDOW_STYLE, WINDOW_EX_STYLE) {
         // Required styles to properly support common window functionality like aero snap.
-        let mut style = WS_CAPTION | WS_BORDER | WS_CLIPSIBLINGS | WS_CLIPCHILDREN | WS_SYSMENU;
+        let mut style = WS_CAPTION | WS_BORDER | WS_CLIPSIBLINGS | WS_SYSMENU;
         let mut style_ex = WS_EX_WINDOWEDGE | WS_EX_ACCEPTFILES;
 
         if self.contains(WindowFlags::RESIZABLE) {
@@ -273,6 +282,12 @@ impl WindowFlags {
         }
         if self.contains(WindowFlags::CHILD) {
             style |= WS_CHILD; // This is incompatible with WS_POPUP if that gets added eventually.
+
+            // Remove decorations window styles for child
+            if !self.contains(WindowFlags::MARKER_DECORATIONS) {
+                style &= !(WS_CAPTION | WS_BORDER);
+                style_ex &= !WS_EX_WINDOWEDGE;
+            }
         }
         if self.contains(WindowFlags::POPUP) {
             style |= WS_POPUP;
@@ -285,6 +300,9 @@ impl WindowFlags {
         }
         if self.contains(WindowFlags::IGNORE_CURSOR_EVENT) {
             style_ex |= WS_EX_TRANSPARENT | WS_EX_LAYERED;
+        }
+        if self.contains(WindowFlags::CLIP_CHILDREN) {
+            style |= WS_CLIPCHILDREN;
         }
 
         if self.intersects(
@@ -344,26 +362,20 @@ impl WindowFlags {
 
         if diff.contains(WindowFlags::MAXIMIZED) || new.contains(WindowFlags::MAXIMIZED) {
             unsafe {
-                ShowWindow(
-                    window,
-                    match new.contains(WindowFlags::MAXIMIZED) {
-                        true => SW_MAXIMIZE,
-                        false => SW_RESTORE,
-                    },
-                );
+                ShowWindow(window, match new.contains(WindowFlags::MAXIMIZED) {
+                    true => SW_MAXIMIZE,
+                    false => SW_RESTORE,
+                });
             }
         }
 
         // Minimize operations should execute after maximize for proper window animations
         if diff.contains(WindowFlags::MINIMIZED) {
             unsafe {
-                ShowWindow(
-                    window,
-                    match new.contains(WindowFlags::MINIMIZED) {
-                        true => SW_MINIMIZE,
-                        false => SW_RESTORE,
-                    },
-                );
+                ShowWindow(window, match new.contains(WindowFlags::MINIMIZED) {
+                    true => SW_MINIMIZE,
+                    false => SW_RESTORE,
+                });
             }
 
             diff.remove(WindowFlags::MINIMIZED);
@@ -371,10 +383,7 @@ impl WindowFlags {
 
         if diff.contains(WindowFlags::CLOSABLE) || new.contains(WindowFlags::CLOSABLE) {
             let flags = MF_BYCOMMAND
-                | new
-                    .contains(WindowFlags::CLOSABLE)
-                    .then(|| MF_ENABLED)
-                    .unwrap_or(MF_DISABLED);
+                | if new.contains(WindowFlags::CLOSABLE) { MF_ENABLED } else { MF_DISABLED };
 
             unsafe {
                 EnableMenuItem(GetSystemMenu(window, 0), SC_CLOSE, flags);
@@ -391,12 +400,7 @@ impl WindowFlags {
             let (style, style_ex) = new.to_window_styles();
 
             unsafe {
-                SendMessageW(
-                    window,
-                    event_loop::SET_RETAIN_STATE_ON_SIZE_MSG_ID.get(),
-                    1,
-                    0,
-                );
+                SendMessageW(window, event_loop::SET_RETAIN_STATE_ON_SIZE_MSG_ID.get(), 1, 0);
 
                 // This condition is necessary to avoid having an unrestorable window
                 if !new.contains(WindowFlags::MINIMIZED) {
@@ -417,12 +421,7 @@ impl WindowFlags {
 
                 // Refresh the window frame
                 SetWindowPos(window, 0, 0, 0, 0, 0, flags);
-                SendMessageW(
-                    window,
-                    event_loop::SET_RETAIN_STATE_ON_SIZE_MSG_ID.get(),
-                    0,
-                    0,
-                );
+                SendMessageW(window, event_loop::SET_RETAIN_STATE_ON_SIZE_MSG_ID.get(), 0, 0);
             }
         }
     }
@@ -432,17 +431,17 @@ impl WindowFlags {
             let mut style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
             let style_ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
 
-            // Frameless style implemented by manually overriding the non-client area in `WM_NCCALCSIZE`.
+            // Frameless style implemented by manually overriding the non-client area in
+            // `WM_NCCALCSIZE`.
             if !self.contains(WindowFlags::MARKER_DECORATIONS) {
                 style &= !(WS_CAPTION | WS_SIZEBOX);
             }
 
             util::win_to_err({
                 let b_menu = GetMenu(hwnd) != 0;
-                if let (Some(get_dpi_for_window), Some(adjust_window_rect_ex_for_dpi)) = (
-                    *util::GET_DPI_FOR_WINDOW,
-                    *util::ADJUST_WINDOW_RECT_EX_FOR_DPI,
-                ) {
+                if let (Some(get_dpi_for_window), Some(adjust_window_rect_ex_for_dpi)) =
+                    (*util::GET_DPI_FOR_WINDOW, *util::ADJUST_WINDOW_RECT_EX_FOR_DPI)
+                {
                     let dpi = get_dpi_for_window(hwnd);
                     adjust_window_rect_ex_for_dpi(&mut rect, style, b_menu.into(), style_ex, dpi)
                 } else {
@@ -455,12 +454,7 @@ impl WindowFlags {
 
     pub fn adjust_size(self, hwnd: HWND, size: PhysicalSize<u32>) -> PhysicalSize<u32> {
         let (width, height): (u32, u32) = size.into();
-        let rect = RECT {
-            left: 0,
-            right: width as i32,
-            top: 0,
-            bottom: height as i32,
-        };
+        let rect = RECT { left: 0, right: width as i32, top: 0, bottom: height as i32 };
         let rect = self.adjust_rect(hwnd, rect).unwrap_or(rect);
 
         let outer_x = (rect.right - rect.left).abs();
@@ -492,7 +486,18 @@ impl CursorFlags {
 
         if util::is_focused(window) {
             let cursor_clip = match self.contains(CursorFlags::GRABBED) {
-                true => Some(client_rect),
+                true => {
+                    if self.contains(CursorFlags::HIDDEN) {
+                        // Confine the cursor to the center of the window if the cursor is hidden.
+                        // This avoids problems with the cursor activating
+                        // the taskbar if the window borders or overlaps that.
+                        let cx = (client_rect.left + client_rect.right) / 2;
+                        let cy = (client_rect.top + client_rect.bottom) / 2;
+                        Some(RECT { left: cx, right: cx + 1, top: cy, bottom: cy + 1 })
+                    } else {
+                        Some(client_rect)
+                    }
+                },
                 false => None,
             };
 
@@ -506,8 +511,9 @@ impl CursorFlags {
             };
 
             // We do this check because calling `set_cursor_clip` incessantly will flood the event
-            // loop with `WM_MOUSEMOVE` events, and `refresh_os_cursor` is called by `set_cursor_flags`
-            // which at times gets called once every iteration of the eventloop.
+            // loop with `WM_MOUSEMOVE` events, and `refresh_os_cursor` is called by
+            // `set_cursor_flags` which at times gets called once every iteration of the
+            // eventloop.
             if active_cursor_clip != cursor_clip.map(rect_to_tuple) {
                 util::set_cursor_clip(cursor_clip)?;
             }

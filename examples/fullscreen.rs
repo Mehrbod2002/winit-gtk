@@ -3,10 +3,9 @@
 use simple_logger::SimpleLogger;
 use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
 use winit::event_loop::EventLoop;
-use winit::window::{Fullscreen, WindowBuilder};
-
 #[cfg(target_os = "macos")]
 use winit::platform::macos::WindowExtMacOS;
+use winit::window::{Fullscreen, WindowBuilder};
 
 fn main() {
     SimpleLogger::new().init().unwrap();
@@ -15,16 +14,10 @@ fn main() {
     let mut decorations = true;
     let mut minimized = false;
 
-    let window = WindowBuilder::new()
-        .with_title("Hello world!")
-        .build(&event_loop)
-        .unwrap();
+    let window = WindowBuilder::new().with_title("Hello world!").build(&event_loop).unwrap();
 
     let mut monitor_index = 0;
-    let mut monitor = event_loop
-        .available_monitors()
-        .next()
-        .expect("no monitor found!");
+    let mut monitor = event_loop.available_monitors().next().expect("no monitor found!");
     println!("Monitor: {:?}", monitor.name());
 
     let mut mode_index = 0;
@@ -61,21 +54,21 @@ fn main() {
                     VirtualKeyCode::Escape => control_flow.set_exit(),
                     VirtualKeyCode::F | VirtualKeyCode::B if window.fullscreen().is_some() => {
                         window.set_fullscreen(None);
-                    }
+                    },
                     VirtualKeyCode::F => {
                         let fullscreen = Some(Fullscreen::Exclusive(mode.clone()));
                         println!("Setting mode: {fullscreen:?}");
                         window.set_fullscreen(fullscreen);
-                    }
+                    },
                     VirtualKeyCode::B => {
                         let fullscreen = Some(Fullscreen::Borderless(Some(monitor.clone())));
                         println!("Setting mode: {fullscreen:?}");
                         window.set_fullscreen(fullscreen);
-                    }
+                    },
                     #[cfg(target_os = "macos")]
                     VirtualKeyCode::C => {
                         window.set_simple_fullscreen(!window.simple_fullscreen());
-                    }
+                    },
                     VirtualKeyCode::S => {
                         monitor_index += 1;
                         if let Some(mon) = elwt.available_monitors().nth(monitor_index) {
@@ -89,7 +82,7 @@ fn main() {
                         mode_index = 0;
                         mode = monitor.video_modes().next().expect("no mode found");
                         println!("Mode: {mode}");
-                    }
+                    },
                     VirtualKeyCode::M => {
                         mode_index += 1;
                         if let Some(m) = monitor.video_modes().nth(mode_index) {
@@ -99,24 +92,24 @@ fn main() {
                             mode = monitor.video_modes().next().expect("no mode found");
                         }
                         println!("Mode: {mode}");
-                    }
+                    },
                     VirtualKeyCode::D => {
                         decorations = !decorations;
                         window.set_decorations(decorations);
-                    }
+                    },
                     VirtualKeyCode::X => {
                         let is_maximized = window.is_maximized();
                         window.set_maximized(!is_maximized);
-                    }
+                    },
                     VirtualKeyCode::Z => {
                         minimized = !minimized;
                         window.set_minimized(minimized);
-                    }
+                    },
                     _ => (),
                 },
                 _ => (),
             },
-            _ => {}
+            _ => {},
         }
     });
 }

@@ -1,482 +1,497 @@
-use crate::dpi::{LogicalSize, PhysicalPosition, PhysicalSize, Position, Size};
-use crate::error::{ExternalError, NotSupportedError, OsError as RootOE};
-use crate::event;
+use std::cell::Ref;
+use std::rc::Rc;
+use std::sync::Arc;
+
+use dpi::{LogicalPosition, LogicalSize};
+use web_sys::HtmlCanvasElement;
+
+use super::main_thread::{MainThreadMarker, MainThreadSafe};
+use super::monitor::MonitorHandler;
+use super::r#async::Dispatcher;
+use super::{backend, lock, ActiveEventLoop};
+use crate::dpi::{LogicalInsets, PhysicalInsets, PhysicalPosition, PhysicalSize, Position, Size};
+use crate::error::{NotSupportedError, RequestError};
 use crate::icon::Icon;
+use crate::monitor::MonitorHandle as RootMonitorHandle;
 use crate::window::{
-    CursorGrabMode, CursorIcon, ImePurpose, ResizeDirection, Theme, UserAttentionType,
-    WindowAttributes, WindowButtons, WindowId as RootWI, WindowLevel,
+    Cursor, CursorGrabMode, Fullscreen as RootFullscreen, ImePurpose, ResizeDirection, Theme,
+    UserAttentionType, Window as RootWindow, WindowAttributes, WindowButtons, WindowId,
+    WindowLevel,
 };
 
-use raw_window_handle::{RawDisplayHandle, RawWindowHandle, WebDisplayHandle, WebWindowHandle};
-
-use super::{backend, monitor::MonitorHandle, EventLoopWindowTarget, Fullscreen};
-
-use std::cell::{Ref, RefCell};
-use std::collections::vec_deque::IntoIter as VecDequeIter;
-use std::collections::VecDeque;
-use std::rc::Rc;
-
 pub struct Window {
-    canvas: Rc<RefCell<backend::Canvas>>,
-    previous_pointer: RefCell<&'static str>,
+    inner: Dispatcher<Inner>,
+}
+
+pub struct Inner {
     id: WindowId,
-    register_redraw_request: Box<dyn Fn()>,
-    resize_notify_fn: Box<dyn Fn(PhysicalSize<u32>)>,
+    pub window: web_sys::Window,
+    monitor: Rc<MonitorHandler>,
+    safe_area: Rc<backend::SafeAreaHandle>,
+    canvas: Rc<backend::Canvas>,
     destroy_fn: Option<Box<dyn FnOnce()>>,
-    has_focus: Rc<RefCell<bool>>,
 }
 
 impl Window {
-    pub(crate) fn new<T>(
-        target: &EventLoopWindowTarget<T>,
+    pub(crate) fn new(
+        target: &ActiveEventLoop,
         attr: WindowAttributes,
-        platform_attr: PlatformSpecificWindowBuilderAttributes,
-    ) -> Result<Self, RootOE> {
-        let runner = target.runner.clone();
-
+    ) -> Result<Self, RequestError> {
         let id = target.generate_id();
 
-        let prevent_default = platform_attr.prevent_default;
-
-        let canvas = backend::Canvas::create(platform_attr)?;
-        let canvas = Rc::new(RefCell::new(canvas));
-
-        let register_redraw_request = Box::new(move || runner.request_redraw(RootWI(id)));
-
-        let has_focus = Rc::new(RefCell::new(false));
-        target.register(&canvas, id, prevent_default, has_focus.clone());
-
-        let runner = target.runner.clone();
-        let resize_notify_fn = Box::new(move |new_size| {
-            runner.send_event(event::Event::WindowEvent {
-                window_id: RootWI(id),
-                event: event::WindowEvent::Resized(new_size),
-            });
-        });
-
-        let runner = target.runner.clone();
-        let destroy_fn = Box::new(move || runner.notify_destroy_window(RootWI(id)));
-
-        let window = Window {
-            canvas,
-            previous_pointer: RefCell::new("auto"),
+        let window = target.runner.window();
+        let navigator = target.runner.navigator();
+        let document = target.runner.document();
+        let canvas = backend::Canvas::create(
+            target.runner.main_thread(),
             id,
-            register_redraw_request,
-            resize_notify_fn,
+            window.clone(),
+            navigator.clone(),
+            document.clone(),
+            attr,
+        )?;
+        let canvas = Rc::new(canvas);
+
+        target.register(&canvas, id);
+
+        let runner = target.runner.clone();
+        let destroy_fn = Box::new(move || runner.notify_destroy_window(id));
+
+        let inner = Inner {
+            id,
+            window: window.clone(),
+            monitor: Rc::clone(target.runner.monitor()),
+            safe_area: Rc::clone(target.runner.safe_area()),
+            canvas,
             destroy_fn: Some(destroy_fn),
-            has_focus,
         };
 
-        backend::set_canvas_size(
-            window.canvas.borrow().raw(),
-            attr.inner_size.unwrap_or(Size::Logical(LogicalSize {
-                width: 1024.0,
-                height: 768.0,
-            })),
-        );
-        window.set_title(&attr.title);
-        window.set_maximized(attr.maximized);
-        window.set_visible(attr.visible);
-        window.set_window_icon(attr.window_icon);
+        let canvas = Rc::downgrade(&inner.canvas);
+        let (dispatcher, runner) = Dispatcher::new(target.runner.main_thread(), inner);
+        target.runner.add_canvas(id, canvas, runner);
 
-        Ok(window)
+        Ok(Window { inner: dispatcher })
     }
 
-    pub fn canvas(&self) -> Ref<'_, backend::Canvas> {
-        self.canvas.borrow()
+    pub fn canvas(&self) -> Option<Ref<'_, HtmlCanvasElement>> {
+        MainThreadMarker::new()
+            .map(|main_thread| Ref::map(self.inner.value(main_thread), |inner| inner.canvas.raw()))
     }
 
-    pub fn set_title(&self, title: &str) {
-        self.canvas.borrow().set_attribute("alt", title);
+    pub(crate) fn prevent_default(&self) -> bool {
+        self.inner.queue(|inner| inner.canvas.prevent_default.get())
     }
 
-    pub fn set_transparent(&self, _transparent: bool) {}
+    pub(crate) fn set_prevent_default(&self, prevent_default: bool) {
+        self.inner.dispatch(move |inner| inner.canvas.prevent_default.set(prevent_default))
+    }
 
-    pub fn set_visible(&self, _visible: bool) {
+    pub(crate) fn is_cursor_lock_raw(&self) -> bool {
+        self.inner.queue(move |inner| {
+            lock::is_cursor_lock_raw(inner.canvas.navigator(), inner.canvas.document())
+        })
+    }
+}
+
+impl RootWindow for Window {
+    fn id(&self) -> WindowId {
+        self.inner.queue(|inner| inner.id)
+    }
+
+    fn scale_factor(&self) -> f64 {
+        self.inner.queue(Inner::scale_factor)
+    }
+
+    fn request_redraw(&self) {
+        self.inner.dispatch(|inner| inner.canvas.request_animation_frame())
+    }
+
+    fn pre_present_notify(&self) {}
+
+    fn reset_dead_keys(&self) {
+        // Not supported
+    }
+
+    fn surface_position(&self) -> PhysicalPosition<i32> {
+        // Note: the canvas element has no window decorations.
+        (0, 0).into()
+    }
+
+    fn outer_position(&self) -> Result<PhysicalPosition<i32>, RequestError> {
+        Ok(self.inner.queue(|inner| inner.canvas.position().to_physical(inner.scale_factor())))
+    }
+
+    fn set_outer_position(&self, position: Position) {
+        self.inner.dispatch(move |inner| {
+            let position = position.to_logical::<f64>(inner.scale_factor());
+            backend::set_canvas_position(
+                inner.canvas.document(),
+                inner.canvas.raw(),
+                inner.canvas.style(),
+                position,
+            )
+        })
+    }
+
+    fn surface_size(&self) -> PhysicalSize<u32> {
+        self.inner.queue(|inner| inner.canvas.surface_size())
+    }
+
+    fn request_surface_size(&self, size: Size) -> Option<PhysicalSize<u32>> {
+        self.inner.queue(|inner| {
+            let size = size.to_logical(self.scale_factor());
+            backend::set_canvas_size(
+                inner.canvas.document(),
+                inner.canvas.raw(),
+                inner.canvas.style(),
+                size,
+            );
+            None
+        })
+    }
+
+    fn outer_size(&self) -> PhysicalSize<u32> {
+        // Note: the canvas element has no window decorations, so this is equal to `surface_size`.
+        self.surface_size()
+    }
+
+    fn safe_area(&self) -> PhysicalInsets<u32> {
+        self.inner.queue(|inner| {
+            let (safe_start_pos, safe_size) = inner.safe_area.get();
+            let safe_end_pos = LogicalPosition::new(
+                safe_start_pos.x + safe_size.width,
+                safe_start_pos.y + safe_size.height,
+            );
+
+            let surface_start_pos = inner.canvas.position();
+            let surface_size = LogicalSize::new(
+                backend::style_size_property(inner.canvas.style(), "width"),
+                backend::style_size_property(inner.canvas.style(), "height"),
+            );
+            let surface_end_pos = LogicalPosition::new(
+                surface_start_pos.x + surface_size.width,
+                surface_start_pos.y + surface_size.height,
+            );
+
+            let top = f64::max(safe_start_pos.y - surface_start_pos.y, 0.);
+            let left = f64::max(safe_start_pos.x - surface_start_pos.x, 0.);
+            let bottom = f64::max(surface_end_pos.y - safe_end_pos.y, 0.);
+            let right = f64::max(surface_end_pos.x - safe_end_pos.x, 0.);
+
+            let insets = LogicalInsets::new(top, left, bottom, right);
+            insets.to_physical(inner.scale_factor())
+        })
+    }
+
+    fn set_min_surface_size(&self, min_size: Option<Size>) {
+        self.inner.dispatch(move |inner| {
+            let dimensions = min_size.map(|min_size| min_size.to_logical(inner.scale_factor()));
+            backend::set_canvas_min_size(
+                inner.canvas.document(),
+                inner.canvas.raw(),
+                inner.canvas.style(),
+                dimensions,
+            )
+        })
+    }
+
+    fn set_max_surface_size(&self, max_size: Option<Size>) {
+        self.inner.dispatch(move |inner| {
+            let dimensions = max_size.map(|dimensions| dimensions.to_logical(inner.scale_factor()));
+            backend::set_canvas_max_size(
+                inner.canvas.document(),
+                inner.canvas.raw(),
+                inner.canvas.style(),
+                dimensions,
+            )
+        })
+    }
+
+    fn surface_resize_increments(&self) -> Option<PhysicalSize<u32>> {
+        None
+    }
+
+    fn set_surface_resize_increments(&self, _: Option<Size>) {
+        // Intentionally a no-op: users can't resize canvas elements
+    }
+
+    fn set_title(&self, title: &str) {
+        self.inner.queue(|inner| inner.canvas.set_attribute("alt", title))
+    }
+
+    fn set_transparent(&self, _: bool) {}
+
+    fn set_blur(&self, _: bool) {}
+
+    fn set_visible(&self, _: bool) {
         // Intentionally a no-op
     }
 
-    #[inline]
-    pub fn is_visible(&self) -> Option<bool> {
+    fn is_visible(&self) -> Option<bool> {
         None
     }
 
-    pub fn request_redraw(&self) {
-        (self.register_redraw_request)();
-    }
-
-    pub fn outer_position(&self) -> Result<PhysicalPosition<i32>, NotSupportedError> {
-        Ok(self
-            .canvas
-            .borrow()
-            .position()
-            .to_physical(self.scale_factor()))
-    }
-
-    pub fn inner_position(&self) -> Result<PhysicalPosition<i32>, NotSupportedError> {
-        // Note: the canvas element has no window decorations, so this is equal to `outer_position`.
-        self.outer_position()
-    }
-
-    pub fn set_outer_position(&self, position: Position) {
-        let position = position.to_logical::<f64>(self.scale_factor());
-
-        let canvas = self.canvas.borrow();
-        canvas.set_attribute("position", "fixed");
-        canvas.set_attribute("left", &position.x.to_string());
-        canvas.set_attribute("top", &position.y.to_string());
-    }
-
-    #[inline]
-    pub fn inner_size(&self) -> PhysicalSize<u32> {
-        self.canvas.borrow().size()
-    }
-
-    #[inline]
-    pub fn outer_size(&self) -> PhysicalSize<u32> {
-        // Note: the canvas element has no window decorations, so this is equal to `inner_size`.
-        self.inner_size()
-    }
-
-    #[inline]
-    pub fn set_inner_size(&self, size: Size) {
-        let old_size = self.inner_size();
-        backend::set_canvas_size(self.canvas.borrow().raw(), size);
-        let new_size = self.inner_size();
-        if old_size != new_size {
-            (self.resize_notify_fn)(new_size);
-        }
-    }
-
-    #[inline]
-    pub fn set_min_inner_size(&self, _dimensions: Option<Size>) {
+    fn set_resizable(&self, _: bool) {
         // Intentionally a no-op: users can't resize canvas elements
     }
 
-    #[inline]
-    pub fn set_max_inner_size(&self, _dimensions: Option<Size>) {
-        // Intentionally a no-op: users can't resize canvas elements
-    }
-
-    #[inline]
-    pub fn resize_increments(&self) -> Option<PhysicalSize<u32>> {
-        None
-    }
-
-    #[inline]
-    pub fn set_resize_increments(&self, _increments: Option<Size>) {
-        // Intentionally a no-op: users can't resize canvas elements
-    }
-
-    #[inline]
-    pub fn set_resizable(&self, _resizable: bool) {
-        // Intentionally a no-op: users can't resize canvas elements
-    }
-
-    pub fn is_resizable(&self) -> bool {
+    fn is_resizable(&self) -> bool {
         true
     }
 
-    #[inline]
-    pub fn set_enabled_buttons(&self, _buttons: WindowButtons) {}
+    fn set_enabled_buttons(&self, _: WindowButtons) {}
 
-    #[inline]
-    pub fn enabled_buttons(&self) -> WindowButtons {
+    fn enabled_buttons(&self) -> WindowButtons {
         WindowButtons::all()
     }
 
-    #[inline]
-    pub fn scale_factor(&self) -> f64 {
-        super::backend::scale_factor()
-    }
-
-    #[inline]
-    pub fn set_cursor_icon(&self, cursor: CursorIcon) {
-        let text = match cursor {
-            CursorIcon::Default => "auto",
-            CursorIcon::Crosshair => "crosshair",
-            CursorIcon::Hand => "pointer",
-            CursorIcon::Arrow => "default",
-            CursorIcon::Move => "move",
-            CursorIcon::Text => "text",
-            CursorIcon::Wait => "wait",
-            CursorIcon::Help => "help",
-            CursorIcon::Progress => "progress",
-
-            CursorIcon::NotAllowed => "not-allowed",
-            CursorIcon::ContextMenu => "context-menu",
-            CursorIcon::Cell => "cell",
-            CursorIcon::VerticalText => "vertical-text",
-            CursorIcon::Alias => "alias",
-            CursorIcon::Copy => "copy",
-            CursorIcon::NoDrop => "no-drop",
-            CursorIcon::Grab => "grab",
-            CursorIcon::Grabbing => "grabbing",
-            CursorIcon::AllScroll => "all-scroll",
-            CursorIcon::ZoomIn => "zoom-in",
-            CursorIcon::ZoomOut => "zoom-out",
-
-            CursorIcon::EResize => "e-resize",
-            CursorIcon::NResize => "n-resize",
-            CursorIcon::NeResize => "ne-resize",
-            CursorIcon::NwResize => "nw-resize",
-            CursorIcon::SResize => "s-resize",
-            CursorIcon::SeResize => "se-resize",
-            CursorIcon::SwResize => "sw-resize",
-            CursorIcon::WResize => "w-resize",
-            CursorIcon::EwResize => "ew-resize",
-            CursorIcon::NsResize => "ns-resize",
-            CursorIcon::NeswResize => "nesw-resize",
-            CursorIcon::NwseResize => "nwse-resize",
-            CursorIcon::ColResize => "col-resize",
-            CursorIcon::RowResize => "row-resize",
-        };
-        *self.previous_pointer.borrow_mut() = text;
-        backend::set_canvas_style_property(self.canvas.borrow().raw(), "cursor", text);
-    }
-
-    #[inline]
-    pub fn set_cursor_position(&self, _position: Position) -> Result<(), ExternalError> {
-        Err(ExternalError::NotSupported(NotSupportedError::new()))
-    }
-
-    #[inline]
-    pub fn set_cursor_grab(&self, mode: CursorGrabMode) -> Result<(), ExternalError> {
-        let lock = match mode {
-            CursorGrabMode::None => false,
-            CursorGrabMode::Locked => true,
-            CursorGrabMode::Confined => {
-                return Err(ExternalError::NotSupported(NotSupportedError::new()))
-            }
-        };
-
-        self.canvas
-            .borrow()
-            .set_cursor_lock(lock)
-            .map_err(ExternalError::Os)
-    }
-
-    #[inline]
-    pub fn set_cursor_visible(&self, visible: bool) {
-        if !visible {
-            self.canvas.borrow().set_attribute("cursor", "none");
-        } else {
-            self.canvas
-                .borrow()
-                .set_attribute("cursor", &self.previous_pointer.borrow());
-        }
-    }
-
-    #[inline]
-    pub fn drag_window(&self) -> Result<(), ExternalError> {
-        Err(ExternalError::NotSupported(NotSupportedError::new()))
-    }
-
-    #[inline]
-    pub fn drag_resize_window(&self, _direction: ResizeDirection) -> Result<(), ExternalError> {
-        Err(ExternalError::NotSupported(NotSupportedError::new()))
-    }
-
-    #[inline]
-    pub fn set_cursor_hittest(&self, _hittest: bool) -> Result<(), ExternalError> {
-        Err(ExternalError::NotSupported(NotSupportedError::new()))
-    }
-
-    #[inline]
-    pub fn set_minimized(&self, _minimized: bool) {
+    fn set_minimized(&self, _: bool) {
         // Intentionally a no-op, as canvases cannot be 'minimized'
     }
 
-    #[inline]
-    pub fn is_minimized(&self) -> Option<bool> {
+    fn is_minimized(&self) -> Option<bool> {
         // Canvas cannot be 'minimized'
         Some(false)
     }
 
-    #[inline]
-    pub fn set_maximized(&self, _maximized: bool) {
+    fn set_maximized(&self, _: bool) {
         // Intentionally a no-op, as canvases cannot be 'maximized'
     }
 
-    #[inline]
-    pub fn is_maximized(&self) -> bool {
+    fn is_maximized(&self) -> bool {
         // Canvas cannot be 'maximized'
         false
     }
 
-    #[inline]
-    pub(crate) fn fullscreen(&self) -> Option<Fullscreen> {
-        if self.canvas.borrow().is_fullscreen() {
-            Some(Fullscreen::Borderless(Some(self.current_monitor_inner())))
-        } else {
-            None
-        }
+    fn set_fullscreen(&self, fullscreen: Option<RootFullscreen>) {
+        self.inner.dispatch(move |inner| {
+            if let Some(fullscreen) = fullscreen {
+                inner.canvas.request_fullscreen(fullscreen.into());
+            } else {
+                inner.canvas.exit_fullscreen()
+            }
+        })
     }
 
-    #[inline]
-    pub(crate) fn set_fullscreen(&self, fullscreen: Option<Fullscreen>) {
-        if fullscreen.is_some() {
-            self.canvas.borrow().request_fullscreen();
-        } else if self.canvas.borrow().is_fullscreen() {
-            backend::exit_fullscreen();
-        }
+    fn fullscreen(&self) -> Option<RootFullscreen> {
+        self.inner.queue(|inner| {
+            if inner.canvas.is_fullscreen() {
+                Some(RootFullscreen::Borderless(None))
+            } else {
+                None
+            }
+        })
     }
 
-    #[inline]
-    pub fn set_decorations(&self, _decorations: bool) {
+    fn set_decorations(&self, _: bool) {
         // Intentionally a no-op, no canvas decorations
     }
 
-    pub fn is_decorated(&self) -> bool {
+    fn is_decorated(&self) -> bool {
         true
     }
 
-    #[inline]
-    pub fn set_window_level(&self, _level: WindowLevel) {
+    fn set_window_level(&self, _: WindowLevel) {
         // Intentionally a no-op, no window ordering
     }
 
-    #[inline]
-    pub fn set_window_icon(&self, _window_icon: Option<Icon>) {
+    fn set_window_icon(&self, _: Option<Icon>) {
         // Currently an intentional no-op
     }
 
-    #[inline]
-    pub fn set_ime_position(&self, _position: Position) {
-        // Currently a no-op as it does not seem there is good support for this on web
-    }
-
-    #[inline]
-    pub fn set_ime_allowed(&self, _allowed: bool) {
+    fn set_ime_cursor_area(&self, _: Position, _: Size) {
         // Currently not implemented
     }
 
-    #[inline]
-    pub fn set_ime_purpose(&self, _purpose: ImePurpose) {
+    fn set_ime_allowed(&self, _: bool) {
         // Currently not implemented
     }
 
-    #[inline]
-    pub fn focus_window(&self) {
-        // Currently a no-op as it does not seem there is good support for this on web
+    fn set_ime_purpose(&self, _: ImePurpose) {
+        // Currently not implemented
     }
 
-    #[inline]
-    pub fn request_user_attention(&self, _request_type: Option<UserAttentionType>) {
+    fn focus_window(&self) {
+        self.inner.dispatch(|inner| {
+            let _ = inner.canvas.raw().focus();
+        })
+    }
+
+    fn has_focus(&self) -> bool {
+        self.inner.queue(|inner| inner.canvas.has_focus.get())
+    }
+
+    fn request_user_attention(&self, _: Option<UserAttentionType>) {
         // Currently an intentional no-op
     }
 
-    #[inline]
-    // Allow directly accessing the current monitor internally without unwrapping.
-    fn current_monitor_inner(&self) -> MonitorHandle {
-        MonitorHandle
-    }
+    fn set_theme(&self, _: Option<Theme>) {}
 
-    #[inline]
-    pub fn current_monitor(&self) -> Option<MonitorHandle> {
-        Some(self.current_monitor_inner())
-    }
-
-    #[inline]
-    pub fn available_monitors(&self) -> VecDequeIter<MonitorHandle> {
-        VecDeque::new().into_iter()
-    }
-
-    #[inline]
-    pub fn primary_monitor(&self) -> Option<MonitorHandle> {
-        Some(MonitorHandle)
-    }
-
-    #[inline]
-    pub fn id(&self) -> WindowId {
-        self.id
-    }
-
-    #[inline]
-    pub fn raw_window_handle(&self) -> RawWindowHandle {
-        let mut window_handle = WebWindowHandle::empty();
-        window_handle.id = self.id.0;
-        RawWindowHandle::Web(window_handle)
-    }
-
-    #[inline]
-    pub fn raw_display_handle(&self) -> RawDisplayHandle {
-        RawDisplayHandle::Web(WebDisplayHandle::empty())
-    }
-
-    #[inline]
-    pub fn set_theme(&self, _theme: Option<Theme>) {}
-
-    #[inline]
-    pub fn theme(&self) -> Option<Theme> {
-        web_sys::window()
-            .and_then(|window| {
-                window
-                    .match_media("(prefers-color-scheme: dark)")
-                    .ok()
-                    .flatten()
-            })
-            .map(|media_query_list| {
-                if media_query_list.matches() {
+    fn theme(&self) -> Option<Theme> {
+        self.inner.queue(|inner| {
+            backend::is_dark_mode(&inner.window).map(|is_dark_mode| {
+                if is_dark_mode {
                     Theme::Dark
                 } else {
                     Theme::Light
                 }
             })
+        })
     }
 
-    #[inline]
-    pub fn has_focus(&self) -> bool {
-        *self.has_focus.borrow()
-    }
+    fn set_content_protected(&self, _: bool) {}
 
-    pub fn title(&self) -> String {
+    fn title(&self) -> String {
         String::new()
+    }
+
+    fn set_cursor(&self, cursor: Cursor) {
+        self.inner.dispatch(move |inner| inner.canvas.cursor.set_cursor(cursor))
+    }
+
+    fn set_cursor_position(&self, _: Position) -> Result<(), RequestError> {
+        Err(NotSupportedError::new("set_cursor_position is not supported").into())
+    }
+
+    fn set_cursor_grab(&self, mode: CursorGrabMode) -> Result<(), RequestError> {
+        Ok(self.inner.queue(|inner| {
+            match mode {
+                CursorGrabMode::None => inner.canvas.document().exit_pointer_lock(),
+                CursorGrabMode::Locked => lock::request_pointer_lock(
+                    inner.canvas.navigator(),
+                    inner.canvas.document(),
+                    inner.canvas.raw(),
+                ),
+                CursorGrabMode::Confined => {
+                    return Err(NotSupportedError::new("confined cursor mode is not supported"))
+                },
+            }
+
+            Ok(())
+        })?)
+    }
+
+    fn set_cursor_visible(&self, visible: bool) {
+        self.inner.dispatch(move |inner| inner.canvas.cursor.set_cursor_visible(visible))
+    }
+
+    fn drag_window(&self) -> Result<(), RequestError> {
+        Err(NotSupportedError::new("drag_window is not supported").into())
+    }
+
+    fn drag_resize_window(&self, _: ResizeDirection) -> Result<(), RequestError> {
+        Err(NotSupportedError::new("drag_resize_window is not supported").into())
+    }
+
+    fn show_window_menu(&self, _: Position) {}
+
+    fn set_cursor_hittest(&self, _: bool) -> Result<(), RequestError> {
+        Err(NotSupportedError::new("set_cursor_hittest is not supported").into())
+    }
+
+    fn current_monitor(&self) -> Option<RootMonitorHandle> {
+        Some(self.inner.queue(|inner| inner.monitor.current_monitor()).into())
+    }
+
+    fn available_monitors(&self) -> Box<dyn Iterator<Item = RootMonitorHandle>> {
+        Box::new(
+            self.inner
+                .queue(|inner| inner.monitor.available_monitors())
+                .into_iter()
+                .map(RootMonitorHandle::from),
+        )
+    }
+
+    fn primary_monitor(&self) -> Option<RootMonitorHandle> {
+        self.inner.queue(|inner| inner.monitor.primary_monitor()).map(RootMonitorHandle::from)
+    }
+
+    fn rwh_06_display_handle(&self) -> &dyn rwh_06::HasDisplayHandle {
+        self
+    }
+
+    fn rwh_06_window_handle(&self) -> &dyn rwh_06::HasWindowHandle {
+        self
     }
 }
 
-impl Drop for Window {
+impl rwh_06::HasWindowHandle for Window {
+    fn window_handle(&self) -> Result<rwh_06::WindowHandle<'_>, rwh_06::HandleError> {
+        MainThreadMarker::new()
+            .map(|main_thread| {
+                let inner = self.inner.value(main_thread);
+                // SAFETY: This will only work if the reference to `HtmlCanvasElement` stays valid.
+                let canvas: &wasm_bindgen::JsValue = inner.canvas.raw();
+                let window_handle =
+                    rwh_06::WebCanvasWindowHandle::new(std::ptr::NonNull::from(canvas).cast());
+                // SAFETY: The pointer won't be invalidated as long as `Window` lives, which the
+                // lifetime is bound to.
+                unsafe {
+                    rwh_06::WindowHandle::borrow_raw(rwh_06::RawWindowHandle::WebCanvas(
+                        window_handle,
+                    ))
+                }
+            })
+            .ok_or(rwh_06::HandleError::Unavailable)
+    }
+}
+
+impl rwh_06::HasDisplayHandle for Window {
+    fn display_handle(&self) -> Result<rwh_06::DisplayHandle<'_>, rwh_06::HandleError> {
+        Ok(rwh_06::DisplayHandle::web())
+    }
+}
+
+impl Inner {
+    #[inline]
+    pub fn scale_factor(&self) -> f64 {
+        super::backend::scale_factor(&self.window)
+    }
+}
+
+impl Drop for Inner {
     fn drop(&mut self) {
         if let Some(destroy_fn) = self.destroy_fn.take() {
             destroy_fn();
         }
     }
 }
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct WindowId(pub(crate) u32);
-
-impl WindowId {
-    pub const unsafe fn dummy() -> Self {
-        Self(0)
-    }
-}
-
-impl From<WindowId> for u64 {
-    fn from(window_id: WindowId) -> Self {
-        window_id.0 as u64
-    }
-}
-
-impl From<u64> for WindowId {
-    fn from(raw_id: u64) -> Self {
-        Self(raw_id as u32)
-    }
-}
-
-#[derive(Clone)]
-pub struct PlatformSpecificWindowBuilderAttributes {
-    pub(crate) canvas: Option<backend::RawCanvasType>,
+#[derive(Clone, Debug)]
+pub struct PlatformSpecificWindowAttributes {
+    pub(crate) canvas: Option<Arc<MainThreadSafe<backend::RawCanvasType>>>,
     pub(crate) prevent_default: bool,
     pub(crate) focusable: bool,
+    pub(crate) append: bool,
 }
 
-impl Default for PlatformSpecificWindowBuilderAttributes {
+impl PartialEq for PlatformSpecificWindowAttributes {
+    fn eq(&self, other: &Self) -> bool {
+        (match (&self.canvas, &other.canvas) {
+            (Some(this), Some(other)) => Arc::ptr_eq(this, other),
+            (None, None) => true,
+            _ => false,
+        }) && self.prevent_default.eq(&other.prevent_default)
+            && self.focusable.eq(&other.focusable)
+            && self.append.eq(&other.append)
+    }
+}
+
+impl PlatformSpecificWindowAttributes {
+    pub(crate) fn set_canvas(&mut self, canvas: Option<backend::RawCanvasType>) {
+        let Some(canvas) = canvas else {
+            self.canvas = None;
+            return;
+        };
+
+        let main_thread = MainThreadMarker::new()
+            .expect("received a `HtmlCanvasElement` outside the window context");
+
+        self.canvas = Some(Arc::new(MainThreadSafe::new(main_thread, canvas)));
+    }
+}
+
+impl Default for PlatformSpecificWindowAttributes {
     fn default() -> Self {
-        Self {
-            canvas: None,
-            prevent_default: true,
-            focusable: true,
-        }
+        Self { canvas: None, prevent_default: true, focusable: true, append: false }
     }
 }

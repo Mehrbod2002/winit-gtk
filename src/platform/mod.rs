@@ -1,36 +1,39 @@
 //! Contains traits with platform-specific methods in them.
 //!
-//! Contains the follow OS-specific modules:
-//!
-//!  - `android`
-//!  - `ios`
-//!  - `macos`
-//!  - `unix`
-//!  - `windows`
-//!  - `web`
-//!
-//! And the following platform-specific module:
-//!
-//! - `run_return` (available on `windows`, `unix`, `macos`, and `android`)
-//!
-//! However only the module corresponding to the platform you're compiling to will be available.
+//! Only the modules corresponding to the platform you're compiling to will be available.
 
-#[cfg(android_platform)]
+#[cfg(any(android_platform, docsrs))]
 pub mod android;
-#[cfg(ios_platform)]
+#[cfg(any(ios_platform, docsrs))]
 pub mod ios;
-#[cfg(macos_platform)]
+#[cfg(any(macos_platform, docsrs))]
 pub mod macos;
-#[cfg(orbital_platform)]
+#[cfg(any(orbital_platform, docsrs))]
 pub mod orbital;
-// #[cfg(wayland_platform)]
-// pub mod wayland;
-#[cfg(wasm_platform)]
+#[cfg(any(x11_platform, wayland_platform, docsrs))]
+pub mod startup_notify;
+#[cfg(any(wayland_platform, docsrs))]
+pub mod wayland;
+#[cfg(any(web_platform, docsrs))]
 pub mod web;
-#[cfg(windows_platform)]
+#[cfg(any(windows_platform, docsrs))]
 pub mod windows;
-// #[cfg(x11_platform)]
-// pub mod x11;
+#[cfg(any(x11_platform, docsrs))]
+pub mod x11;
+
+#[cfg(any(x11_platform, docsrs))]
+pub mod unix;
+
+#[allow(unused_imports)]
+#[cfg(any(
+    windows_platform,
+    macos_platform,
+    android_platform,
+    x11_platform,
+    wayland_platform,
+    docsrs,
+))]
+pub mod run_on_demand;
 
 #[cfg(any(
     windows_platform,
@@ -38,9 +41,19 @@ pub mod windows;
     android_platform,
     x11_platform,
     wayland_platform,
-    orbital_platform
+    docsrs,
 ))]
-pub mod run_return;
+pub mod pump_events;
 
-#[cfg(any(x11_platform, wayland_platform,))]
-pub mod unix;
+#[cfg(any(
+    windows_platform,
+    macos_platform,
+    x11_platform,
+    wayland_platform,
+    orbital_platform,
+    docsrs
+))]
+pub mod modifier_supplement;
+
+#[cfg(any(windows_platform, macos_platform, x11_platform, wayland_platform, docsrs))]
+pub mod scancode;

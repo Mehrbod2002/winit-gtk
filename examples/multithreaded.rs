@@ -2,15 +2,16 @@
 
 #[cfg(not(wasm_platform))]
 fn main() {
-    use std::{collections::HashMap, sync::mpsc, thread, time::Duration};
+    use std::collections::HashMap;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
 
     use simple_logger::SimpleLogger;
-    use winit::{
-        dpi::{PhysicalPosition, PhysicalSize, Position, Size},
-        event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent},
-        event_loop::EventLoop,
-        window::{CursorGrabMode, CursorIcon, Fullscreen, WindowBuilder, WindowLevel},
-    };
+    use winit::dpi::{PhysicalPosition, PhysicalSize, Position, Size};
+    use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
+    use winit::event_loop::EventLoop;
+    use winit::window::{CursorGrabMode, CursorIcon, Fullscreen, WindowBuilder, WindowLevel};
 
     const WINDOW_COUNT: usize = 3;
     const WINDOW_SIZE: PhysicalSize<u32> = PhysicalSize::new(600, 400);
@@ -19,10 +20,7 @@ fn main() {
     let event_loop = EventLoop::new();
     let mut window_senders = HashMap::with_capacity(WINDOW_COUNT);
     for _ in 0..WINDOW_COUNT {
-        let window = WindowBuilder::new()
-            .with_inner_size(WINDOW_SIZE)
-            .build(&event_loop)
-            .unwrap();
+        let window = WindowBuilder::new().with_inner_size(WINDOW_SIZE).build(&event_loop).unwrap();
 
         let mut video_modes: Vec<_> = window.current_monitor().unwrap().video_modes().collect();
         let mut video_mode_id = 0usize;
@@ -50,7 +48,7 @@ fn main() {
                                 video_modes.get(video_mode_id).unwrap()
                             );
                         }
-                    }
+                    },
                     #[allow(deprecated)]
                     WindowEvent::KeyboardInput {
                         input:
@@ -82,29 +80,29 @@ fn main() {
                                     _ => unreachable!(),
                                 };
                                 println!("Picking video mode: {}", video_modes[video_mode_id]);
-                            }
+                            },
                             F => window.set_fullscreen(match (state, modifiers.alt()) {
                                 (true, false) => Some(Fullscreen::Borderless(None)),
                                 (true, true) => {
                                     Some(Fullscreen::Exclusive(video_modes[video_mode_id].clone()))
-                                }
+                                },
                                 (false, _) => None,
                             }),
                             L if state => {
                                 if let Err(err) = window.set_cursor_grab(CursorGrabMode::Locked) {
                                     println!("error: {err}");
                                 }
-                            }
+                            },
                             G if state => {
                                 if let Err(err) = window.set_cursor_grab(CursorGrabMode::Confined) {
                                     println!("error: {err}");
                                 }
-                            }
+                            },
                             G | L if !state => {
                                 if let Err(err) = window.set_cursor_grab(CursorGrabMode::None) {
                                     println!("error: {err}");
                                 }
-                            }
+                            },
                             H => window.set_cursor_visible(!state),
                             I => {
                                 println!("Info:");
@@ -113,7 +111,7 @@ fn main() {
                                 println!("-> outer_size     : {:?}", window.outer_size());
                                 println!("-> inner_size     : {:?}", window.inner_size());
                                 println!("-> fullscreen     : {:?}", window.fullscreen());
-                            }
+                            },
                             L => window.set_min_inner_size(match state {
                                 true => Some(WINDOW_SIZE),
                                 false => None,
@@ -146,15 +144,15 @@ fn main() {
                                         ))
                                         .unwrap()
                                 }
-                            }
+                            },
                             Z => {
                                 window.set_visible(false);
                                 thread::sleep(Duration::from_secs(1));
                                 window.set_visible(true);
-                            }
+                            },
                             _ => (),
                         }
-                    }
+                    },
                     _ => (),
                 }
             }
@@ -179,16 +177,16 @@ fn main() {
                     ..
                 } => {
                     window_senders.remove(&window_id);
-                }
+                },
                 _ => {
                     if let Some(tx) = window_senders.get(&window_id) {
                         if let Some(event) = event.to_static() {
                             tx.send(event).unwrap();
                         }
                     }
-                }
+                },
             },
-            _ => {}
+            _ => {},
         }
     })
 }

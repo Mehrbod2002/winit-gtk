@@ -1,117 +1,262 @@
+mod animation_frame;
 mod canvas;
-mod event;
+pub mod event;
 mod event_handle;
+mod fullscreen;
+mod intersection_handle;
 mod media_query_handle;
-mod scaling;
-mod timeout;
+mod pointer;
+mod resize_scaling;
+mod safe_area;
+mod schedule;
 
-pub use self::canvas::Canvas;
-pub use self::scaling::ScaleChangeDetector;
-pub use self::timeout::{AnimationFrameRequest, Timeout};
+use std::cell::OnceCell;
 
-use crate::dpi::{LogicalSize, Size};
-use crate::platform::web::WindowExtWebSys;
-use crate::window::Window;
+use js_sys::Array;
 use wasm_bindgen::closure::Closure;
-use web_sys::{window, BeforeUnloadEvent, Element, HtmlCanvasElement};
+use wasm_bindgen::prelude::wasm_bindgen;
+use wasm_bindgen::JsCast;
+use web_sys::{Document, HtmlCanvasElement, Navigator, PageTransitionEvent, VisibilityState};
+
+pub use self::canvas::{Canvas, Style};
+pub use self::event_handle::EventListenerHandle;
+pub use self::resize_scaling::ResizeScaleHandle;
+pub use self::safe_area::SafeAreaHandle;
+pub use self::schedule::Schedule;
+use crate::dpi::{LogicalPosition, LogicalSize};
 
 pub fn throw(msg: &str) {
     wasm_bindgen::throw_str(msg);
 }
 
-pub fn exit_fullscreen() {
-    let window = web_sys::window().expect("Failed to obtain window");
-    let document = window.document().expect("Failed to obtain document");
-
-    document.exit_fullscreen();
+pub struct PageTransitionEventHandle {
+    _show_listener: event_handle::EventListenerHandle<dyn FnMut(PageTransitionEvent)>,
+    _hide_listener: event_handle::EventListenerHandle<dyn FnMut(PageTransitionEvent)>,
 }
 
-pub struct UnloadEventHandle {
-    _listener: event_handle::EventListenerHandle<dyn FnMut(BeforeUnloadEvent)>,
+pub fn on_page_transition(
+    window: web_sys::Window,
+    show_handler: impl FnMut(PageTransitionEvent) + 'static,
+    hide_handler: impl FnMut(PageTransitionEvent) + 'static,
+) -> PageTransitionEventHandle {
+    let show_closure = Closure::new(show_handler);
+    let hide_closure = Closure::new(hide_handler);
+
+    let show_listener =
+        event_handle::EventListenerHandle::new(window.clone(), "pageshow", show_closure);
+    let hide_listener = event_handle::EventListenerHandle::new(window, "pagehide", hide_closure);
+    PageTransitionEventHandle { _show_listener: show_listener, _hide_listener: hide_listener }
 }
 
-pub fn on_unload(mut handler: impl FnMut() + 'static) -> UnloadEventHandle {
-    let window = web_sys::window().expect("Failed to obtain window");
-
-    let closure = Closure::wrap(
-        Box::new(move |_: BeforeUnloadEvent| handler()) as Box<dyn FnMut(BeforeUnloadEvent)>
-    );
-
-    let listener = event_handle::EventListenerHandle::new(&window, "beforeunload", closure);
-    UnloadEventHandle {
-        _listener: listener,
-    }
-}
-
-impl WindowExtWebSys for Window {
-    fn canvas(&self) -> HtmlCanvasElement {
-        self.window.canvas().raw().clone()
-    }
-
-    fn is_dark_mode(&self) -> bool {
-        let window = web_sys::window().expect("Failed to obtain window");
-
-        window
-            .match_media("(prefers-color-scheme: dark)")
-            .ok()
-            .flatten()
-            .map(|media| media.matches())
-            .unwrap_or(false)
-    }
-}
-
-pub fn window_size() -> LogicalSize<f64> {
-    let window = web_sys::window().expect("Failed to obtain window");
-    let width = window
-        .inner_width()
-        .expect("Failed to get width")
-        .as_f64()
-        .expect("Failed to get width as f64");
-    let height = window
-        .inner_height()
-        .expect("Failed to get height")
-        .as_f64()
-        .expect("Failed to get height as f64");
-
-    LogicalSize { width, height }
-}
-
-pub fn scale_factor() -> f64 {
-    let window = web_sys::window().expect("Failed to obtain window");
+pub fn scale_factor(window: &web_sys::Window) -> f64 {
     window.device_pixel_ratio()
 }
 
-pub fn set_canvas_size(raw: &HtmlCanvasElement, size: Size) {
-    let scale_factor = scale_factor();
+fn fix_canvas_size(style: &Style, mut size: LogicalSize<f64>) -> LogicalSize<f64> {
+    if style.get("box-sizing") == "border-box" {
+        size.width += style_size_property(style, "border-left-width")
+            + style_size_property(style, "border-right-width")
+            + style_size_property(style, "padding-left")
+            + style_size_property(style, "padding-right");
+        size.height += style_size_property(style, "border-top-width")
+            + style_size_property(style, "border-bottom-width")
+            + style_size_property(style, "padding-top")
+            + style_size_property(style, "padding-bottom");
+    }
 
-    let physical_size = size.to_physical::<u32>(scale_factor);
-    let logical_size = size.to_logical::<f64>(scale_factor);
-
-    raw.set_width(physical_size.width);
-    raw.set_height(physical_size.height);
-
-    set_canvas_style_property(raw, "width", &format!("{}px", logical_size.width));
-    set_canvas_style_property(raw, "height", &format!("{}px", logical_size.height));
+    size
 }
 
-pub fn set_canvas_style_property(raw: &HtmlCanvasElement, property: &str, value: &str) {
-    let style = raw.style();
-    style
-        .set_property(property, value)
-        .unwrap_or_else(|err| panic!("error: {err:?}\nFailed to set {property}"))
+pub fn set_canvas_size(
+    document: &Document,
+    raw: &HtmlCanvasElement,
+    style: &Style,
+    new_size: LogicalSize<f64>,
+) {
+    if !document.contains(Some(raw)) || style.get("display") == "none" {
+        return;
+    }
+
+    let new_size = fix_canvas_size(style, new_size);
+
+    style.set("width", &format!("{}px", new_size.width));
+    style.set("height", &format!("{}px", new_size.height));
 }
 
-pub fn is_fullscreen(canvas: &HtmlCanvasElement) -> bool {
-    let window = window().expect("Failed to obtain window");
-    let document = window.document().expect("Failed to obtain document");
-
-    match document.fullscreen_element() {
-        Some(elem) => {
-            let raw: Element = canvas.clone().into();
-            raw == elem
+pub fn set_canvas_min_size(
+    document: &Document,
+    raw: &HtmlCanvasElement,
+    style: &Style,
+    dimensions: Option<LogicalSize<f64>>,
+) {
+    if let Some(dimensions) = dimensions {
+        if !document.contains(Some(raw)) || style.get("display") == "none" {
+            return;
         }
-        None => false,
+
+        let new_size = fix_canvas_size(style, dimensions);
+
+        style.set("min-width", &format!("{}px", new_size.width));
+        style.set("min-height", &format!("{}px", new_size.height));
+    } else {
+        style.remove("min-width");
+        style.remove("min-height");
     }
 }
 
+pub fn set_canvas_max_size(
+    document: &Document,
+    raw: &HtmlCanvasElement,
+    style: &Style,
+    dimensions: Option<LogicalSize<f64>>,
+) {
+    if let Some(dimensions) = dimensions {
+        if !document.contains(Some(raw)) || style.get("display") == "none" {
+            return;
+        }
+
+        let new_size = fix_canvas_size(style, dimensions);
+
+        style.set("max-width", &format!("{}px", new_size.width));
+        style.set("max-height", &format!("{}px", new_size.height));
+    } else {
+        style.remove("max-width");
+        style.remove("max-height");
+    }
+}
+
+pub fn set_canvas_position(
+    document: &Document,
+    raw: &HtmlCanvasElement,
+    style: &Style,
+    mut position: LogicalPosition<f64>,
+) {
+    if document.contains(Some(raw)) && style.get("display") != "none" {
+        position.x -= style_size_property(style, "margin-left")
+            + style_size_property(style, "border-left-width")
+            + style_size_property(style, "padding-left");
+        position.y -= style_size_property(style, "margin-top")
+            + style_size_property(style, "border-top-width")
+            + style_size_property(style, "padding-top");
+    }
+
+    style.set("position", "fixed");
+    style.set("left", &format!("{}px", position.x));
+    style.set("top", &format!("{}px", position.y));
+}
+
+/// This function will panic if the element is not inserted in the DOM
+/// or is not a CSS property that represents a size in pixel.
+pub fn style_size_property(style: &Style, property: &str) -> f64 {
+    let prop = style.get(property);
+    prop.strip_suffix("px")
+        .expect("Element was not inserted into the DOM or is not a size in pixel")
+        .parse()
+        .expect("CSS property is not a size in pixel")
+}
+
+pub fn is_dark_mode(window: &web_sys::Window) -> Option<bool> {
+    window.match_media("(prefers-color-scheme: dark)").ok().flatten().map(|media| media.matches())
+}
+
+pub fn is_visible(document: &Document) -> bool {
+    document.visibility_state() == VisibilityState::Visible
+}
+
 pub type RawCanvasType = HtmlCanvasElement;
+
+#[derive(Clone, Copy)]
+pub enum Engine {
+    Chromium,
+    Gecko,
+    WebKit,
+}
+
+struct UserAgentData {
+    engine: Option<Engine>,
+    chrome_linux: bool,
+}
+
+thread_local! {
+    static USER_AGENT_DATA: OnceCell<UserAgentData> = const { OnceCell::new() };
+}
+
+pub fn chrome_linux(navigator: &Navigator) -> bool {
+    USER_AGENT_DATA.with(|data| data.get_or_init(|| user_agent(navigator)).chrome_linux)
+}
+
+pub fn engine(navigator: &Navigator) -> Option<Engine> {
+    USER_AGENT_DATA.with(|data| data.get_or_init(|| user_agent(navigator)).engine)
+}
+
+fn user_agent(navigator: &Navigator) -> UserAgentData {
+    #[wasm_bindgen]
+    extern "C" {
+        #[wasm_bindgen(extends = Navigator)]
+        type NavigatorExt;
+
+        #[wasm_bindgen(method, getter, js_name = userAgentData)]
+        fn user_agent_data(this: &NavigatorExt) -> Option<NavigatorUaData>;
+
+        type NavigatorUaData;
+
+        #[wasm_bindgen(method, getter)]
+        fn brands(this: &NavigatorUaData) -> Array;
+
+        #[wasm_bindgen(method, getter)]
+        fn platform(this: &NavigatorUaData) -> String;
+
+        type NavigatorUaBrandVersion;
+
+        #[wasm_bindgen(method, getter)]
+        fn brand(this: &NavigatorUaBrandVersion) -> String;
+    }
+
+    let navigator: &NavigatorExt = navigator.unchecked_ref();
+
+    if let Some(data) = navigator.user_agent_data() {
+        let engine = 'engine: {
+            for brand in data
+                .brands()
+                .iter()
+                .map(NavigatorUaBrandVersion::unchecked_from_js)
+                .map(|brand| brand.brand())
+            {
+                match brand.as_str() {
+                    "Chromium" => break 'engine Some(Engine::Chromium),
+                    // TODO: verify when Firefox actually implements it.
+                    "Gecko" => break 'engine Some(Engine::Gecko),
+                    // TODO: verify when Safari actually implements it.
+                    "WebKit" => break 'engine Some(Engine::WebKit),
+                    _ => (),
+                }
+            }
+
+            None
+        };
+
+        let chrome_linux = matches!(engine, Some(Engine::Chromium))
+            .then(|| data.platform() == "Linux")
+            .unwrap_or(false);
+
+        UserAgentData { engine, chrome_linux }
+    } else {
+        let engine = 'engine: {
+            let Ok(data) = navigator.user_agent() else {
+                break 'engine None;
+            };
+
+            if data.contains("Chrome/") {
+                Some(Engine::Chromium)
+            } else if data.contains("Gecko/") {
+                Some(Engine::Gecko)
+            } else if data.contains("AppleWebKit/") {
+                Some(Engine::WebKit)
+            } else {
+                None
+            }
+        };
+
+        UserAgentData { engine, chrome_linux: false }
+    }
+}

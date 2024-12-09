@@ -1,29 +1,31 @@
-use std::{
-    mem::{self, size_of},
-    ptr,
+use std::mem::{self, size_of};
+use std::ptr;
+
+use windows_sys::Win32::Devices::HumanInterfaceDevice::{
+    HID_USAGE_GENERIC_KEYBOARD, HID_USAGE_GENERIC_MOUSE, HID_USAGE_PAGE_GENERIC,
+};
+use windows_sys::Win32::Foundation::{HANDLE, HWND};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    MapVirtualKeyW, MAPVK_VK_TO_VSC_EX, VK_NUMLOCK, VK_SHIFT,
+};
+use windows_sys::Win32::UI::Input::{
+    GetRawInputData, GetRawInputDeviceInfoW, GetRawInputDeviceList, RegisterRawInputDevices,
+    HRAWINPUT, RAWINPUT, RAWINPUTDEVICE, RAWINPUTDEVICELIST, RAWINPUTHEADER, RAWKEYBOARD,
+    RIDEV_DEVNOTIFY, RIDEV_INPUTSINK, RIDEV_REMOVE, RIDI_DEVICEINFO, RIDI_DEVICENAME,
+    RID_DEVICE_INFO, RID_DEVICE_INFO_HID, RID_DEVICE_INFO_KEYBOARD, RID_DEVICE_INFO_MOUSE,
+    RID_INPUT, RIM_TYPEHID, RIM_TYPEKEYBOARD, RIM_TYPEMOUSE,
+};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    RI_KEY_E0, RI_KEY_E1, RI_MOUSE_BUTTON_1_DOWN, RI_MOUSE_BUTTON_1_UP, RI_MOUSE_BUTTON_2_DOWN,
+    RI_MOUSE_BUTTON_2_UP, RI_MOUSE_BUTTON_3_DOWN, RI_MOUSE_BUTTON_3_UP, RI_MOUSE_BUTTON_4_DOWN,
+    RI_MOUSE_BUTTON_4_UP, RI_MOUSE_BUTTON_5_DOWN, RI_MOUSE_BUTTON_5_UP,
 };
 
-use windows_sys::Win32::{
-    Devices::HumanInterfaceDevice::{
-        HID_USAGE_GENERIC_KEYBOARD, HID_USAGE_GENERIC_MOUSE, HID_USAGE_PAGE_GENERIC,
-    },
-    Foundation::{HANDLE, HWND},
-    UI::{
-        Input::{
-            GetRawInputData, GetRawInputDeviceInfoW, GetRawInputDeviceList,
-            RegisterRawInputDevices, HRAWINPUT, RAWINPUT, RAWINPUTDEVICE, RAWINPUTDEVICELIST,
-            RAWINPUTHEADER, RIDEV_DEVNOTIFY, RIDEV_INPUTSINK, RIDEV_REMOVE, RIDI_DEVICEINFO,
-            RIDI_DEVICENAME, RID_DEVICE_INFO, RID_DEVICE_INFO_HID, RID_DEVICE_INFO_KEYBOARD,
-            RID_DEVICE_INFO_MOUSE, RID_INPUT, RIM_TYPEHID, RIM_TYPEKEYBOARD, RIM_TYPEMOUSE,
-        },
-        WindowsAndMessaging::{
-            RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_LEFT_BUTTON_UP, RI_MOUSE_MIDDLE_BUTTON_DOWN,
-            RI_MOUSE_MIDDLE_BUTTON_UP, RI_MOUSE_RIGHT_BUTTON_DOWN, RI_MOUSE_RIGHT_BUTTON_UP,
-        },
-    },
-};
-
-use crate::{event::ElementState, event_loop::DeviceEventFilter, platform_impl::platform::util};
+use super::scancode_to_physicalkey;
+use crate::event::ElementState;
+use crate::event_loop::DeviceEvents;
+use crate::keyboard::{KeyCode, PhysicalKey};
+use crate::platform_impl::platform::util;
 
 #[allow(dead_code)]
 pub fn get_raw_input_device_list() -> Option<Vec<RAWINPUTDEVICELIST>> {
@@ -81,12 +83,7 @@ pub fn get_raw_input_device_info(handle: HANDLE) -> Option<RawDeviceInfo> {
 
     let mut minimum_size = 0;
     let status = unsafe {
-        GetRawInputDeviceInfoW(
-            handle,
-            RIDI_DEVICEINFO,
-            &mut info as *mut _ as _,
-            &mut minimum_size,
-        )
+        GetRawInputDeviceInfoW(handle, RIDI_DEVICEINFO, &mut info as *mut _ as _, &mut minimum_size)
     };
 
     if status == u32::MAX || status == 0 {
@@ -111,12 +108,7 @@ pub fn get_raw_input_device_name(handle: HANDLE) -> Option<String> {
     let mut name: Vec<u16> = Vec::with_capacity(minimum_size as _);
 
     let status = unsafe {
-        GetRawInputDeviceInfoW(
-            handle,
-            RIDI_DEVICENAME,
-            name.as_ptr() as _,
-            &mut minimum_size,
-        )
+        GetRawInputDeviceInfoW(handle, RIDI_DEVICENAME, name.as_ptr() as _, &mut minimum_size)
     };
 
     if status == u32::MAX || status == 0 {
@@ -140,18 +132,18 @@ pub fn register_raw_input_devices(devices: &[RAWINPUTDEVICE]) -> bool {
 
 pub fn register_all_mice_and_keyboards_for_raw_input(
     mut window_handle: HWND,
-    filter: DeviceEventFilter,
+    filter: DeviceEvents,
 ) -> bool {
     // RIDEV_DEVNOTIFY: receive hotplug events
     // RIDEV_INPUTSINK: receive events even if we're not in the foreground
     // RIDEV_REMOVE: don't receive device events (requires NULL hwndTarget)
     let flags = match filter {
-        DeviceEventFilter::Always => {
+        DeviceEvents::Never => {
             window_handle = 0;
             RIDEV_REMOVE
-        }
-        DeviceEventFilter::Unfocused => RIDEV_DEVNOTIFY,
-        DeviceEventFilter::Never => RIDEV_DEVNOTIFY | RIDEV_INPUTSINK,
+        },
+        DeviceEvents::WhenFocused => RIDEV_DEVNOTIFY,
+        DeviceEvents::Always => RIDEV_DEVNOTIFY | RIDEV_INPUTSINK,
     };
 
     let devices: [RAWINPUTDEVICE; 2] = [
@@ -178,13 +170,7 @@ pub fn get_raw_input_data(handle: HRAWINPUT) -> Option<RAWINPUT> {
     let header_size = size_of::<RAWINPUTHEADER>() as u32;
 
     let status = unsafe {
-        GetRawInputData(
-            handle,
-            RID_INPUT,
-            &mut data as *mut _ as _,
-            &mut data_size,
-            header_size,
-        )
+        GetRawInputData(handle, RID_INPUT, &mut data as *mut _ as _, &mut data_size, header_size)
     };
 
     if status == u32::MAX || status == 0 {
@@ -209,22 +195,107 @@ fn button_flags_to_element_state(
     }
 }
 
-pub fn get_raw_mouse_button_state(button_flags: u32) -> [Option<ElementState>; 3] {
+pub fn get_raw_mouse_button_state(button_flags: u32) -> [Option<ElementState>; 5] {
     [
-        button_flags_to_element_state(
-            button_flags,
-            RI_MOUSE_LEFT_BUTTON_DOWN,
-            RI_MOUSE_LEFT_BUTTON_UP,
-        ),
-        button_flags_to_element_state(
-            button_flags,
-            RI_MOUSE_MIDDLE_BUTTON_DOWN,
-            RI_MOUSE_MIDDLE_BUTTON_UP,
-        ),
-        button_flags_to_element_state(
-            button_flags,
-            RI_MOUSE_RIGHT_BUTTON_DOWN,
-            RI_MOUSE_RIGHT_BUTTON_UP,
-        ),
+        button_flags_to_element_state(button_flags, RI_MOUSE_BUTTON_1_DOWN, RI_MOUSE_BUTTON_1_UP),
+        button_flags_to_element_state(button_flags, RI_MOUSE_BUTTON_2_DOWN, RI_MOUSE_BUTTON_2_UP),
+        button_flags_to_element_state(button_flags, RI_MOUSE_BUTTON_3_DOWN, RI_MOUSE_BUTTON_3_UP),
+        button_flags_to_element_state(button_flags, RI_MOUSE_BUTTON_4_DOWN, RI_MOUSE_BUTTON_4_UP),
+        button_flags_to_element_state(button_flags, RI_MOUSE_BUTTON_5_DOWN, RI_MOUSE_BUTTON_5_UP),
     ]
+}
+
+pub fn get_keyboard_physical_key(keyboard: RAWKEYBOARD) -> Option<PhysicalKey> {
+    let extension = {
+        if util::has_flag(keyboard.Flags, RI_KEY_E0 as _) {
+            0xe000
+        } else if util::has_flag(keyboard.Flags, RI_KEY_E1 as _) {
+            0xe100
+        } else {
+            0x0000
+        }
+    };
+    let scancode = if keyboard.MakeCode == 0 {
+        // In some cases (often with media keys) the device reports a scancode of 0 but a
+        // valid virtual key. In these cases we obtain the scancode from the virtual key.
+        unsafe { MapVirtualKeyW(keyboard.VKey as u32, MAPVK_VK_TO_VSC_EX) as u16 }
+    } else {
+        keyboard.MakeCode | extension
+    };
+    if scancode == 0xe11d || scancode == 0xe02a {
+        // At the hardware (or driver?) level, pressing the Pause key is equivalent to pressing
+        // Ctrl+NumLock.
+        // This equvalence means that if the user presses Pause, the keyboard will emit two
+        // subsequent keypresses:
+        // 1, 0xE11D - Which is a left Ctrl (0x1D) with an extension flag (0xE100)
+        // 2, 0x0045 - Which on its own can be interpreted as Pause
+        //
+        // There's another combination which isn't quite an equivalence:
+        // PrtSc used to be Shift+Asterisk. This means that on some keyboards, presssing
+        // PrtSc (print screen) produces the following sequence:
+        // 1, 0xE02A - Which is a left shift (0x2A) with an extension flag (0xE000)
+        // 2, 0xE037 - Which is a numpad multiply (0x37) with an exteion flag (0xE000). This on
+        //             its own it can be interpreted as PrtSc
+        //
+        // For this reason, if we encounter the first keypress, we simply ignore it, trusting
+        // that there's going to be another event coming, from which we can extract the
+        // appropriate key.
+        // For more on this, read the article by Raymond Chen, titled:
+        // "Why does Ctrl+ScrollLock cancel dialogs?"
+        // https://devblogs.microsoft.com/oldnewthing/20080211-00/?p=23503
+        return None;
+    }
+    let physical_key = if keyboard.VKey == VK_NUMLOCK {
+        // Historically, the NumLock and the Pause key were one and the same physical key.
+        // The user could trigger Pause by pressing Ctrl+NumLock.
+        // Now these are often physically separate and the two keys can be differentiated by
+        // checking the extension flag of the scancode. NumLock is 0xE045, Pause is 0x0045.
+        //
+        // However in this event, both keys are reported as 0x0045 even on modern hardware.
+        // Therefore we use the virtual key instead to determine whether it's a NumLock and
+        // set the KeyCode accordingly.
+        //
+        // For more on this, read the article by Raymond Chen, titled:
+        // "Why does Ctrl+ScrollLock cancel dialogs?"
+        // https://devblogs.microsoft.com/oldnewthing/20080211-00/?p=23503
+        PhysicalKey::Code(KeyCode::NumLock)
+    } else {
+        scancode_to_physicalkey(scancode as u32)
+    };
+    if keyboard.VKey == VK_SHIFT {
+        if let PhysicalKey::Code(
+            KeyCode::NumpadDecimal
+            | KeyCode::Numpad0
+            | KeyCode::Numpad1
+            | KeyCode::Numpad2
+            | KeyCode::Numpad3
+            | KeyCode::Numpad4
+            | KeyCode::Numpad5
+            | KeyCode::Numpad6
+            | KeyCode::Numpad7
+            | KeyCode::Numpad8
+            | KeyCode::Numpad9,
+        ) = physical_key
+        {
+            // On Windows, holding the Shift key makes numpad keys behave as if NumLock
+            // wasn't active. The way this is exposed to applications by the system is that
+            // the application receives a fake key release event for the shift key at the
+            // moment when the numpad key is pressed, just before receiving the numpad key
+            // as well.
+            //
+            // The issue is that in the raw device event (here), the fake shift release
+            // event reports the numpad key as the scancode. Unfortunately, the event
+            // doesn't have any information to tell whether it's the
+            // left shift or the right shift that needs to get the fake
+            // release (or press) event so we don't forward this
+            // event to the application at all.
+            //
+            // For more on this, read the article by Raymond Chen, titled:
+            // "The shift key overrides NumLock"
+            // https://devblogs.microsoft.com/oldnewthing/20040906-00/?p=37953
+            return None;
+        }
+    }
+
+    Some(physical_key)
 }

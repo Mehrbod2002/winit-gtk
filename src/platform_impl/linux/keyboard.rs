@@ -1,9 +1,8 @@
-use gdk::{
-    keys::{constants::*, Key},
-    EventKey, ModifierType,
-};
+use gdk::keys::constants::*;
+use gdk::keys::Key;
+use gdk::{EventKey, ModifierType};
 
-use crate::event::{ModifiersState, VirtualKeyCode};
+use crate::event::keyboard::ModifiersState;
 
 const MODIFIER_MAP: &[(ModifierType, ModifiersState)] = &[
     (ModifierType::SHIFT_MASK, ModifiersState::SHIFT),

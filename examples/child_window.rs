@@ -3,12 +3,10 @@ fn main() {
     use std::collections::HashMap;
 
     use raw_window_handle::HasRawWindowHandle;
-    use winit::{
-        dpi::{LogicalPosition, LogicalSize, Position},
-        event::{ElementState, Event, KeyboardInput, WindowEvent},
-        event_loop::{ControlFlow, EventLoop, EventLoopWindowTarget},
-        window::{Window, WindowBuilder, WindowId},
-    };
+    use winit::dpi::{LogicalPosition, LogicalSize, Position};
+    use winit::event::{ElementState, Event, KeyboardInput, WindowEvent};
+    use winit::event_loop::{ControlFlow, EventLoop, EventLoopWindowTarget};
+    use winit::window::{Window, WindowBuilder, WindowId};
 
     fn spawn_child_window(
         parent: &Window,
@@ -50,24 +48,21 @@ fn main() {
                 WindowEvent::CloseRequested => {
                     windows.clear();
                     *control_flow = ControlFlow::Exit;
-                }
+                },
                 WindowEvent::CursorEntered { device_id: _ } => {
-                    // On x11, println when the cursor entered in a window even if the child window is created
-                    // by some key inputs.
-                    // the child windows are always placed at (0, 0) with size (200, 200) in the parent window,
-                    // so we also can see this log when we move the cursor arround (200, 200) in parent window.
+                    // On x11, println when the cursor entered in a window even if the child window
+                    // is created by some key inputs.
+                    // the child windows are always placed at (0, 0) with size (200, 200) in the
+                    // parent window, so we also can see this log when we move
+                    // the cursor arround (200, 200) in parent window.
                     println!("cursor entered in the window {window_id:?}");
-                }
+                },
                 WindowEvent::KeyboardInput {
-                    input:
-                        KeyboardInput {
-                            state: ElementState::Pressed,
-                            ..
-                        },
+                    input: KeyboardInput { state: ElementState::Pressed, .. },
                     ..
                 } => {
                     spawn_child_window(&parent_window, event_loop, &mut windows);
-                }
+                },
                 _ => (),
             }
         }

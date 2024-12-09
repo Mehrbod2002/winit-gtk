@@ -1,11 +1,9 @@
 #![allow(clippy::single_match)]
 
 use simple_logger::SimpleLogger;
-use winit::{
-    event::{DeviceEvent, ElementState, Event, KeyboardInput, ModifiersState, WindowEvent},
-    event_loop::EventLoop,
-    window::{CursorGrabMode, WindowBuilder},
-};
+use winit::event::{DeviceEvent, ElementState, Event, KeyboardInput, ModifiersState, WindowEvent};
+use winit::event_loop::EventLoop;
+use winit::window::{CursorGrabMode, WindowBuilder};
 
 fn main() {
     SimpleLogger::new().init().unwrap();
@@ -27,9 +25,7 @@ fn main() {
                 WindowEvent::KeyboardInput {
                     input:
                         KeyboardInput {
-                            state: ElementState::Released,
-                            virtual_keycode: Some(key),
-                            ..
+                            state: ElementState::Released, virtual_keycode: Some(key), ..
                         },
                     ..
                 } => {
@@ -38,21 +34,21 @@ fn main() {
                         Escape => {
                             control_flow.set_exit();
                             Ok(())
-                        }
+                        },
                         G => window.set_cursor_grab(CursorGrabMode::Confined),
                         L => window.set_cursor_grab(CursorGrabMode::Locked),
                         A => window.set_cursor_grab(CursorGrabMode::None),
                         H => {
                             window.set_cursor_visible(modifiers.shift());
                             Ok(())
-                        }
+                        },
                         _ => Ok(()),
                     };
 
                     if let Err(err) = result {
                         println!("error: {err}");
                     }
-                }
+                },
                 WindowEvent::ModifiersChanged(m) => modifiers = m,
                 _ => (),
             },

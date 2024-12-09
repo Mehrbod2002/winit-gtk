@@ -1,11 +1,9 @@
 use log::debug;
 use simple_logger::SimpleLogger;
-use winit::{
-    dpi::LogicalSize,
-    event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent},
-    event_loop::EventLoop,
-    window::WindowBuilder,
-};
+use winit::dpi::LogicalSize;
+use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
+use winit::event_loop::EventLoop;
+use winit::window::WindowBuilder;
 
 fn main() {
     SimpleLogger::new().init().unwrap();
@@ -24,10 +22,11 @@ fn main() {
         control_flow.set_wait();
 
         match event {
-            Event::WindowEvent {
-                event: WindowEvent::CloseRequested,
-                window_id,
-            } if window_id == window.id() => control_flow.set_exit(),
+            Event::WindowEvent { event: WindowEvent::CloseRequested, window_id }
+                if window_id == window.id() =>
+            {
+                control_flow.set_exit()
+            },
             Event::WindowEvent {
                 event:
                     WindowEvent::KeyboardInput {
@@ -49,7 +48,7 @@ fn main() {
                 };
                 debug!("Had increments: {}", new_increments.is_none());
                 window.set_resize_increments(new_increments);
-            }
+            },
             Event::MainEventsCleared => window.request_redraw(),
             _ => (),
         }
